@@ -1,0 +1,36 @@
+{
+  "name": "timerecordsystem",
+  "version": "1.0.0",
+  "description": "",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "cross-env NODE_ENV=test DB_FILE=:memory: jest --runInBand"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ukuk717/TimeRecordSystem.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/ukuk717/TimeRecordSystem/issues"
+  },
+  "homepage": "https://github.com/ukuk717/TimeRecordSystem#readme",
+  "dependencies": {
+    "bcryptjs": "^3.0.2",
+    "better-sqlite3": "^12.4.1",
+    "better-sqlite3-session-store": "^0.1.0",
+    "ejs": "^3.1.10",
+    "express": "^5.1.0",
+    "express-session": "^1.18.2",
+    "luxon": "^3.7.2",
+    "xlsx-populate": "^1.21.0"
+  },
+  "devDependencies": {
+    "cross-env": "^10.1.0",
+    "jest": "^30.2.0",
+    "supertest": "^7.1.4"
+  }
+}

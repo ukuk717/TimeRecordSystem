@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>従業員ダッシュボード | 勤怠管理システム</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <h1>勤怠管理システム</h1>
+    <nav>
+      <span class="nav-user"><%= currentUser.username %>さん</span>
+      <a href="/employee/password" class="nav-link">パスワード変更</a>
+      <form method="post" action="/logout" class="nav-form">
+        <button type="submit" class="btn link">ログアウト</button>
+      </form>
+    </nav>
+  </header>
+  <main class="container">
+    <% if (flash) { %>
+      <div class="flash <%= flash.type %>"><%= flash.message %></div>
+    <% } %>
+
+    <section class="card">
+      <h2>ワンクリック打刻</h2>
+      <p>
+        現在の状態:
+        <% if (openSession) { %>
+          <strong class="status in-progress">勤務中（開始: <%= openSession.startFormatted %>）</strong>
+        <% } else { %>
+          <strong class="status idle">待機中</strong>
+        <% } %>
+      </p>
+      <form method="post" action="/employee/record">
+        <button type="submit" class="btn primary">
+          <% if (openSession) { %>
+            勤務終了を記録
+          <% } else { %>
+            勤務開始を記録
+          <% } %>
+        </button>
+      </form>
+    </section>
+
+    <section class="card">
+      <h2>今月の合計勤務時間</h2>
+      <p class="highlight"><%= monthlySummary.formattedTotal %>（分単位）</p>
+    </section>
+
+    <section class="card">
+      <h2>最近30日間の勤務時間（日別）</h2>
+      <table class="table">
+        <thead>
+          <tr>
+            <th>日付</th>
+            <th>勤務時間</th>
+          </tr>
+        </thead>
+        <tbody>
+          <% if (dailySummary.length === 0) { %>
+            <tr><td colspan="2">記録がありません。</td></tr>
+          <% } else { %>
+            <% dailySummary.forEach(function(row) { %>
+              <tr>
+                <td><%= row.date %></td>
+                <td><%= row.formatted %></td>
+              </tr>
+            <% }); %>
+          <% } %>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="card">
+      <h2>最近の打刻履歴</h2>
+      <table class="table">
+        <thead>
+          <tr>
+            <th>開始</th>
+            <th>終了</th>
+            <th>勤務時間</th>
+          </tr>
+        </thead>
+        <tbody>
+          <% if (sessionHistory.length === 0) { %>
+            <tr><td colspan="3">履歴がありません。</td></tr>
+          <% } else { %>
+            <% sessionHistory.forEach(function(s) { %>
+              <tr>
+                <td><%= s.startFormatted %></td>
+                <td><%= s.endFormatted %></td>
+                <td><%= s.formattedMinutes %></td>
+              </tr>
+            <% }); %>
+          <% } %>
+        </tbody>
+      </table>
+    </section>
+  </main>
+</body>
+</html>
+

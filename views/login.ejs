@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ログイン | 勤怠管理システム</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <h1>勤怠管理システム</h1>
+  </header>
+  <main class="container">
+    <% if (flash) { %>
+      <div class="flash <%= flash.type %>"><%= flash.message %></div>
+    <% } %>
+    <section class="card">
+      <h2>ログイン</h2>
+      <form method="post" action="/login" class="form">
+        <label class="form-field">
+          <span>ユーザー名</span>
+          <input type="text" name="username" autocomplete="username" required>
+        </label>
+        <label class="form-field">
+          <span>パスワード</span>
+          <input type="password" name="password" autocomplete="current-password" required minlength="<%= minPasswordLength %>">
+        </label>
+        <button type="submit" class="btn primary">ログイン</button>
+      </form>
+    </section>
+  </main>
+</body>
+</html>
+

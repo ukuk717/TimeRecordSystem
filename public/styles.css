@@ -1,0 +1,210 @@
+:root {
+  color-scheme: light;
+  --primary: #0066cc;
+  --primary-light: #e6f2ff;
+  --danger: #cc3300;
+  --success: #007a3d;
+  --border: #d9d9d9;
+  --text: #222222;
+  --background: #f7f7f7;
+  font-family: 'Segoe UI', 'Hiragino Kaku Gothic ProN', 'Yu Gothic', sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--background);
+  color: var(--text);
+}
+
+.app-header {
+  background: #ffffff;
+  border-bottom: 1px solid var(--border);
+  padding: 1rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.app-header h1 {
+  margin: 0;
+  font-size: 1.25rem;
+}
+
+.app-header nav {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.nav-link {
+  color: var(--primary);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.nav-link:hover {
+  text-decoration: underline;
+}
+
+.nav-form {
+  margin: 0;
+}
+
+.nav-user {
+  font-weight: 600;
+}
+
+.container {
+  max-width: 960px;
+  margin: 1.5rem auto;
+  padding: 0 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.card {
+  background: #ffffff;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  padding: 1.5rem;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.05);
+}
+
+.card h2 {
+  margin-top: 0;
+  font-size: 1.1rem;
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.form-inline {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.75rem;
+}
+
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.form-field input,
+.form-field select {
+  padding: 0.6rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  font-size: 1rem;
+}
+
+.form-field small {
+  color: #666666;
+}
+
+.btn {
+  border: none;
+  border-radius: 24px;
+  padding: 0.65rem 1.4rem;
+  font-size: 1rem;
+  cursor: pointer;
+  background: var(--border);
+  color: var(--text);
+  transition: filter 0.2s ease;
+}
+
+.btn.primary {
+  background: var(--primary);
+  color: #ffffff;
+}
+
+.btn.secondary {
+  background: var(--primary-light);
+  color: var(--primary);
+}
+
+.btn.link {
+  background: transparent;
+  color: var(--primary);
+  padding: 0.4rem 0.6rem;
+}
+
+.btn:hover {
+  filter: brightness(1.05);
+}
+
+.flash {
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  font-weight: 600;
+}
+
+.flash.success {
+  background: #e5f6ef;
+  color: var(--success);
+}
+
+.flash.error {
+  background: #fde8e2;
+  color: var(--danger);
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.95rem;
+}
+
+.table th,
+.table td {
+  border-bottom: 1px solid var(--border);
+  padding: 0.65rem;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.highlight {
+  font-size: 2rem;
+  font-weight: 700;
+  color: var(--primary);
+}
+
+.status {
+  margin-left: 0.5rem;
+}
+
+.status.in-progress {
+  color: var(--primary);
+}
+
+.status.idle {
+  color: #666666;
+}
+
+@media (max-width: 600px) {
+  .app-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .form-inline label {
+    width: 100%;
+  }
+
+  .table th,
+  .table td {
+    font-size: 0.9rem;
+  }
+}
+

@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>従業員アカウント作成 | 勤怠管理システム</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <h1>従業員アカウント作成</h1>
+    <nav>
+      <a href="/admin" class="nav-link">管理者メニューへ戻る</a>
+      <form method="post" action="/logout" class="nav-form">
+        <button type="submit" class="btn link">ログアウト</button>
+      </form>
+    </nav>
+  </header>
+  <main class="container">
+    <% if (flash) { %>
+      <div class="flash <%= flash.type %>"><%= flash.message %></div>
+    <% } %>
+    <section class="card">
+      <h2>新規従業員</h2>
+      <form method="post" action="/admin/users" class="form">
+        <label class="form-field">
+          <span>ユーザー名</span>
+          <input type="text" name="username" required autocomplete="off">
+        </label>
+        <label class="form-field">
+          <span>初期パスワード</span>
+          <input type="password" name="password" required minlength="<%= minPasswordLength %>">
+          <small>半角英数字・記号のみ使用可</small>
+        </label>
+        <button type="submit" class="btn primary">作成</button>
+      </form>
+    </section>
+  </main>
+</body>
+</html>
+
