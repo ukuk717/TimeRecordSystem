@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>勤怠管理システム | 勤務記録訂正</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <h1>勤怠管理システム - 管理者</h1>
+    <nav>
+      <a href="/admin" class="nav-link">ダッシュボード</a>
+      <a href="/admin/users/new" class="nav-link">従業員登録</a>
+      <form method="post" action="/logout" class="nav-form">
+        <button type="submit" class="btn link">ログアウト</button>
+      </form>
+    </nav>
+  </header>
+  <main class="container">
+    <% if (flash) { %>
+      <div class="flash <%= flash.type %>"><%= flash.message %></div>
+    <% } %>
+
+    <section class="card">
+      <h2>勤務記録訂正</h2>
+      <p>
+        対象従業員:
+        <strong><%= employee.username %></strong>
+      </p>
+      <form method="get" action="/admin/employees/<%= employee.id %>/sessions" class="form form-inline">
+        <label>
+          <span>年</span>
+          <input type="number" name="year" value="<%= targetYear %>" min="2000" max="2100">
+        </label>
+        <label>
+          <span>月</span>
+          <input type="number" name="month" value="<%= targetMonth %>" min="1" max="12">
+        </label>
+        <button type="submit" class="btn">表示</button>
+      </form>
+      <p>
+        表示中の月合計:
+        <strong class="highlight-sm"><%= monthlySummary.formattedTotal %></strong>
+      </p>
+    </section>
+
+    <section class="card">
+      <h2>勤務記録の追加</h2>
+      <form
+        method="post"
+        action="/admin/employees/<%= employee.id %>/sessions<%= queryString %>"
+        class="form form-inline session-add-form"
+      >
+        <label class="form-field">
+          <span>開始日時</span>
+          <input type="datetime-local" name="startTime" required>
+        </label>
+        <label class="form-field">
+          <span>終了日時</span>
+          <input type="datetime-local" name="endTime" required>
+        </label>
+        <button type="submit" class="btn primary">記録を追加</button>
+      </form>
+    </section>
+
+    <section class="card">
+      <h2>勤務記録一覧</h2>
+      <table class="table session-table">
+        <thead>
+          <tr>
+            <th>開始</th>
+            <th>終了</th>
+            <th>合計</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          <% if (sessions.length === 0) { %>
+            <tr><td colspan="4">対象期間の勤務記録がありません。</td></tr>
+          <% } else { %>
+            <% sessions.forEach(function(session) { %>
+              <tr>
+                <td>
+                  <input
+                    type="datetime-local"
+                    name="startTime"
+                    value="<%= session.startInput %>"
+                    required
+                    form="session-form-<%= session.id %>"
+                  >
+                </td>
+                <td>
+                  <input
+                    type="datetime-local"
+                    name="endTime"
+                    value="<%= session.endInput %>"
+                    form="session-form-<%= session.id %>"
+                  >
+                </td>
+                <td><%= session.formattedMinutes %></td>
+                <td>
+                  <div class="session-actions">
+                    <button
+                      type="submit"
+                      class="btn primary"
+                      form="session-form-<%= session.id %>"
+                    >
+                      保存
+                    </button>
+                    <button
+                      type="submit"
+                      class="btn danger"
+                      form="session-form-<%= session.id %>"
+                      formaction="/admin/employees/<%= employee.id %>/sessions/<%= session.id %>/delete<%= queryString %>"
+                      formnovalidate
+                    >
+                      削除
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            <% }); %>
+          <% } %>
+        </tbody>
+      </table>
+      <% if (sessions.length > 0) { %>
+        <% sessions.forEach(function(session) { %>
+          <form
+            id="session-form-<%= session.id %>"
+            method="post"
+            action="/admin/employees/<%= employee.id %>/sessions/<%= session.id %>/update<%= queryString %>"
+          ></form>
+        <% }); %>
+      <% } %>
+    </section>
+  </main>
+</body>
+</html>

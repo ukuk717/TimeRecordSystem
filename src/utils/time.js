@@ -20,6 +20,12 @@ function formatDate(isoString) {
   return dt.toFormat('yyyy/MM/dd');
 }
 
+function formatForDateTimeInput(isoString) {
+  const dt = toZonedDateTime(isoString);
+  if (!dt) return '';
+  return dt.toFormat("yyyy-LL-dd'T'HH:mm");
+}
+
 function formatMinutesToHM(totalMinutes) {
   if (typeof totalMinutes !== 'number' || Number.isNaN(totalMinutes)) {
     return '0:00';
@@ -59,6 +65,13 @@ function toISO(dt) {
   return dt.toUTC().toISO();
 }
 
+function parseDateTimeInput(value) {
+  if (!value) return null;
+  const dt = DateTime.fromISO(value, { zone: ZONE });
+  if (!dt.isValid) return null;
+  return dt.toUTC().toISO();
+}
+
 function dateKey(dt) {
   return dt.toFormat('yyyy-MM-dd');
 }
@@ -76,11 +89,13 @@ module.exports = {
   toZonedDateTime,
   formatDateTime,
   formatDate,
+  formatForDateTimeInput,
   formatMinutesToHM,
   diffMinutes,
   getMonthRange,
   getRecentRange,
   toISO,
+  parseDateTimeInput,
   dateKey,
   formatDateKey,
   Duration,

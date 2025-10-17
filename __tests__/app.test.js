@@ -9,6 +9,7 @@ const {
   getAllWorkSessionsByUser,
 } = require('../src/db');
 const { hashPassword } = require('../src/services/userService');
+const { formatForDateTimeInput } = require('../src/utils/time');
 
 beforeEach(async () => {
   deleteAllData();
@@ -87,5 +88,53 @@ describe('App integration', () => {
     );
     expect(response.headers['content-disposition']).toContain('attachment; filename=');
   });
-});
 
+  test('admin can add, update, and delete employee work sessions', async () => {
+    const password = 'Emp44556!';
+    const hashed = await hashPassword(password);
+    createUser({ username: 'needs-fix', passwordHash: hashed, role: 'employee' });
+    const employee = getUserByUsername('needs-fix');
+
+    const adminAgent = request.agent(app);
+    const adminPassword = process.env.DEFAULT_ADMIN_PASSWORD || 'Admin123!';
+    await adminAgent
+      .post('/login')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send(`username=admin&password=${encodeURIComponent(adminPassword)}`);
+
+    let response = await adminAgent
+      .post(`/admin/employees/${employee.id}/sessions`)
+      .type('form')
+      .send({ startTime: '2024-04-01T09:00', endTime: '2024-04-01T18:00' });
+
+    expect(response.status).toBe(302);
+
+    let sessions = getAllWorkSessionsByUser(employee.id);
+    expect(sessions).toHaveLength(1);
+    const sessionId = sessions[0].id;
+    expect(formatForDateTimeInput(sessions[0].start_time)).toBe('2024-04-01T09:00');
+    expect(formatForDateTimeInput(sessions[0].end_time)).toBe('2024-04-01T18:00');
+
+    response = await adminAgent
+      .post(`/admin/employees/${employee.id}/sessions/${sessionId}/update`)
+      .type('form')
+      .send({ startTime: '2024-04-01T08:30', endTime: '2024-04-01T17:30' });
+
+    expect(response.status).toBe(302);
+
+    sessions = getAllWorkSessionsByUser(employee.id);
+    expect(sessions).toHaveLength(1);
+    expect(formatForDateTimeInput(sessions[0].start_time)).toBe('2024-04-01T08:30');
+    expect(formatForDateTimeInput(sessions[0].end_time)).toBe('2024-04-01T17:30');
+
+    response = await adminAgent
+      .post(`/admin/employees/${employee.id}/sessions/${sessionId}/delete`)
+      .type('form')
+      .send();
+
+    expect(response.status).toBe(302);
+
+    sessions = getAllWorkSessionsByUser(employee.id);
+    expect(sessions).toHaveLength(0);
+  });
+});

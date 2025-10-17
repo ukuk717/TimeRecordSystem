@@ -13,8 +13,13 @@ const {
   getAllEmployees,
   createWorkSession,
   closeWorkSession,
+  createWorkSessionWithEnd,
+  updateWorkSessionTimes,
   getOpenWorkSession,
+  getWorkSessionsByUserBetween,
   getAllWorkSessionsByUser,
+  getWorkSessionById,
+  deleteWorkSession,
 } = require('./db');
 const {
   validatePassword,
@@ -34,6 +39,8 @@ const {
   getMonthRange,
   toZonedDateTime,
   diffMinutes,
+  formatForDateTimeInput,
+  parseDateTimeInput,
 } = require('./utils/time');
 
 const app = express();
@@ -267,6 +274,172 @@ app.post('/admin/users', requireRole('admin'), async (req, res) => {
     res.redirect('/admin/users/new');
   }
 });
+
+const buildSessionQuery = (query = {}) => {
+  const params = [];
+  if (query.year) {
+    params.push(`year=${encodeURIComponent(query.year)}`);
+  }
+  if (query.month) {
+    params.push(`month=${encodeURIComponent(query.month)}`);
+  }
+  return params.length > 0 ? `?${params.join('&')}` : '';
+};
+
+const buildAdminSessionsUrl = (userId, query = {}) =>
+  `/admin/employees/${userId}/sessions${buildSessionQuery(query)}`;
+
+const getEmployeeForAdmin = (req, res) => {
+  const employeeId = Number.parseInt(req.params.userId, 10);
+  const employee = Number.isNaN(employeeId) ? null : getUserById(employeeId);
+  if (!employee || employee.role !== 'employee') {
+    setFlash(req, 'error', '従業員が見つかりません。');
+    res.redirect('/admin');
+    return null;
+  }
+  return employee;
+};
+
+app.get('/admin/employees/:userId/sessions', requireRole('admin'), (req, res) => {
+  const employee = getEmployeeForAdmin(req, res);
+  if (!employee) {
+    return;
+  }
+
+  const now = new Date();
+  const requestedYear = Number.parseInt(req.query.year, 10);
+  const requestedMonth = Number.parseInt(req.query.month, 10);
+  const baseDate = !Number.isNaN(requestedYear) && !Number.isNaN(requestedMonth)
+    ? toZonedDateTime(new Date(Date.UTC(requestedYear, requestedMonth - 1, 1)).toISOString())
+    : toZonedDateTime(now.toISOString());
+  const targetYear = Number.isNaN(requestedYear) ? baseDate.year : requestedYear;
+  const targetMonth = Number.isNaN(requestedMonth) ? baseDate.month : requestedMonth;
+
+  const { start, end } = getMonthRange(targetYear, targetMonth);
+  const startIso = start.toUTC().toISO();
+  const endIso = end.toUTC().toISO();
+  const records = getWorkSessionsByUserBetween(employee.id, startIso, endIso);
+
+  const sessions = records.map((session) => {
+    const durationMinutes = session.end_time
+      ? diffMinutes(session.start_time, session.end_time)
+      : null;
+    return {
+      id: session.id,
+      startInput: formatForDateTimeInput(session.start_time),
+      endInput: session.end_time ? formatForDateTimeInput(session.end_time) : '',
+      startDisplay: formatDateTime(session.start_time),
+      endDisplay: session.end_time ? formatDateTime(session.end_time) : '險倬鹸荳ｭ',
+      formattedMinutes: durationMinutes !== null ? formatMinutesToHM(durationMinutes) : '--',
+    };
+  });
+
+  const monthlySummary = getUserMonthlySummary(employee.id, targetYear, targetMonth);
+
+  res.render('admin_sessions', {
+    employee,
+    sessions,
+    targetYear,
+    targetMonth,
+    monthlySummary,
+    queryString: buildSessionQuery(req.query),
+  });
+});
+
+app.post('/admin/employees/:userId/sessions', requireRole('admin'), (req, res) => {
+  const employee = getEmployeeForAdmin(req, res);
+  if (!employee) {
+    return;
+  }
+
+  const startInput = (req.body.startTime || '').trim();
+  const endInput = (req.body.endTime || '').trim();
+  const startIso = parseDateTimeInput(startInput);
+  const endIso = parseDateTimeInput(endInput);
+
+  if (!startIso || !endIso) {
+    setFlash(req, 'error', '開始と終了の日時を正しく入力してください。');
+    res.redirect(buildAdminSessionsUrl(employee.id, req.query));
+    return;
+  }
+
+  if (diffMinutes(startIso, endIso) <= 0) {
+    setFlash(req, 'error', '終了時刻は開始時刻より後に設定してください。');
+    res.redirect(buildAdminSessionsUrl(employee.id, req.query));
+    return;
+  }
+
+  createWorkSessionWithEnd(employee.id, startIso, endIso);
+  setFlash(req, 'success', '勤務記録を追加しました。');
+  res.redirect(buildAdminSessionsUrl(employee.id, req.query));
+});
+
+app.post('/admin/employees/:userId/sessions/:sessionId/update', requireRole('admin'), (req, res) => {
+  const employee = getEmployeeForAdmin(req, res);
+  if (!employee) {
+    return;
+  }
+
+  const sessionId = Number.parseInt(req.params.sessionId, 10);
+  const session = Number.isNaN(sessionId) ? null : getWorkSessionById(sessionId);
+  if (!session || session.user_id !== employee.id) {
+    setFlash(req, 'error', '該当する勤務記録が見つかりません。');
+    res.redirect(buildAdminSessionsUrl(employee.id, req.query));
+    return;
+  }
+
+  const startInput = (req.body.startTime || '').trim();
+  const endInput = (req.body.endTime || '').trim();
+  const startIso = parseDateTimeInput(startInput);
+
+  if (!startIso) {
+    setFlash(req, 'error', '開始時刻を正しく入力してください。');
+    res.redirect(buildAdminSessionsUrl(employee.id, req.query));
+    return;
+  }
+
+  let endIso = null;
+  if (endInput) {
+    endIso = parseDateTimeInput(endInput);
+    if (!endIso) {
+      setFlash(req, 'error', '終了時刻を正しく入力してください。');
+      res.redirect(buildAdminSessionsUrl(employee.id, req.query));
+      return;
+    }
+    if (diffMinutes(startIso, endIso) <= 0) {
+      setFlash(req, 'error', '終了時刻は開始時刻より後に設定してください。');
+      res.redirect(buildAdminSessionsUrl(employee.id, req.query));
+      return;
+    }
+  }
+
+  updateWorkSessionTimes(session.id, startIso, endIso);
+  setFlash(req, 'success', '勤務記録を更新しました。');
+  res.redirect(buildAdminSessionsUrl(employee.id, req.query));
+});
+
+app.post(
+  '/admin/employees/:userId/sessions/:sessionId/delete',
+  requireRole('admin'),
+  (req, res) => {
+    const employee = getEmployeeForAdmin(req, res);
+    if (!employee) {
+      return;
+    }
+
+    const sessionId = Number.parseInt(req.params.sessionId, 10);
+    const session = Number.isNaN(sessionId) ? null : getWorkSessionById(sessionId);
+    if (!session || session.user_id !== employee.id) {
+      setFlash(req, 'error', '該当する勤務記録が見つかりません。');
+      res.redirect(buildAdminSessionsUrl(employee.id, req.query));
+      return;
+    }
+
+    deleteWorkSession(session.id);
+    setFlash(req, 'success', '勤務記録を削除しました。');
+    res.redirect(buildAdminSessionsUrl(employee.id, req.query));
+  }
+);
 
 app.get('/admin/export', requireRole('admin'), async (req, res) => {
   const { userId, year, month } = req.query;

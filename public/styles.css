@@ -180,6 +180,11 @@ body {
   color: var(--primary);
 }
 
+.highlight-sm {
+  font-weight: 600;
+  color: var(--primary);
+}
+
 .status {
   margin-left: 0.5rem;
 }
@@ -190,6 +195,25 @@ body {
 
 .status.idle {
   color: #666666;
+}
+
+.session-table input[type='datetime-local'] {
+  width: 100%;
+  padding: 0.5rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  font-size: 0.95rem;
+}
+
+.session-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.btn.danger {
+  background: #fde8e2;
+  color: var(--danger);
 }
 
 @media (max-width: 600px) {
@@ -207,4 +231,3 @@ body {
     font-size: 0.9rem;
   }
 }
-

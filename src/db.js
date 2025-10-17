@@ -50,14 +50,27 @@ const workSessionStatements = {
     INSERT INTO work_sessions (user_id, start_time)
     VALUES (?, ?)
   `),
+  insertWithEnd: db.prepare(`
+    INSERT INTO work_sessions (user_id, start_time, end_time)
+    VALUES (?, ?, ?)
+  `),
   updateEnd: db.prepare(`
     UPDATE work_sessions SET end_time = ? WHERE id = ?
+  `),
+  updateTimes: db.prepare(`
+    UPDATE work_sessions
+    SET start_time = ?, end_time = ?
+    WHERE id = ?
   `),
   openForUser: db.prepare(`
     SELECT * FROM work_sessions
     WHERE user_id = ? AND end_time IS NULL
     ORDER BY start_time DESC
     LIMIT 1
+  `),
+  byId: db.prepare(`
+    SELECT * FROM work_sessions
+    WHERE id = ?
   `),
   byUserBetween: db.prepare(`
     SELECT * FROM work_sessions
@@ -70,6 +83,10 @@ const workSessionStatements = {
     SELECT * FROM work_sessions
     WHERE user_id = ?
     ORDER BY start_time DESC
+  `),
+  delete: db.prepare(`
+    DELETE FROM work_sessions
+    WHERE id = ?
   `),
   adminCount: db.prepare(`SELECT COUNT(*) as count FROM users WHERE role = 'admin'`),
 };
@@ -107,6 +124,20 @@ function closeWorkSession(sessionId, isoEnd) {
   return workSessionStatements.updateEnd.run(isoEnd, sessionId);
 }
 
+function updateWorkSessionTimes(sessionId, startIso, endIso) {
+  return workSessionStatements.updateTimes.run(startIso, endIso, sessionId);
+}
+
+function createWorkSessionWithEnd(userId, isoStart, isoEnd) {
+  const info = workSessionStatements.insertWithEnd.run(userId, isoStart, isoEnd);
+  return {
+    id: info.lastInsertRowid,
+    user_id: userId,
+    start_time: isoStart,
+    end_time: isoEnd,
+  };
+}
+
 function getOpenWorkSession(userId) {
   return workSessionStatements.openForUser.get(userId);
 }
@@ -117,6 +148,14 @@ function getWorkSessionsByUserBetween(userId, startIso, endIso) {
 
 function getAllWorkSessionsByUser(userId) {
   return workSessionStatements.allByUser.all(userId);
+}
+
+function getWorkSessionById(id) {
+  return workSessionStatements.byId.get(id);
+}
+
+function deleteWorkSession(sessionId) {
+  return workSessionStatements.delete.run(sessionId);
 }
 
 function ensureDefaultAdmin() {
@@ -152,9 +191,13 @@ module.exports = {
   getAllEmployees,
   createWorkSession,
   closeWorkSession,
+  createWorkSessionWithEnd,
+  updateWorkSessionTimes,
   getOpenWorkSession,
   getWorkSessionsByUserBetween,
   getAllWorkSessionsByUser,
+  getWorkSessionById,
+  deleteWorkSession,
   ensureDefaultAdmin,
   deleteAllData,
 };
