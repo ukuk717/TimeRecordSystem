@@ -8,10 +8,12 @@
 </head>
 <body>
   <header class="app-header">
-    <h1>勤怠管理システム - 管理者</h1>
+    <h1>勤怠管理システム - テナント管理者</h1>
     <nav>
-      <a href="/admin/users/new" class="nav-link">従業員アカウント作成</a>
+      <a href="/admin/role-codes" class="nav-link">ロールコード管理</a>
+      <a href="/password/change" class="nav-link">パスワード変更</a>
       <form method="post" action="/logout" class="nav-form">
+        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
         <button type="submit" class="btn link">ログアウト</button>
       </form>
     </nav>
@@ -22,7 +24,10 @@
     <% } %>
 
     <section class="card">
-      <h2>月次サマリー</h2>
+      <header class="section-header">
+        <h2>月次サマリー</h2>
+        <p class="section-subtitle">テナントID: <code><%= tenantId %></code></p>
+      </header>
       <form method="get" action="/admin" class="form form-inline">
         <label>
           <span>年</span>
@@ -34,6 +39,7 @@
         </label>
         <button type="submit" class="btn">表示</button>
       </form>
+
       <table class="table">
         <thead>
           <tr>
@@ -44,12 +50,19 @@
           </tr>
         </thead>
         <tbody>
-          <% if (monthlySummary.length === 0) { %>
+          <% if (!monthlySummary || monthlySummary.length === 0) { %>
             <tr><td colspan="4">従業員が登録されていません。</td></tr>
           <% } else { %>
             <% monthlySummary.forEach(function(row) { %>
               <tr>
-                <td><%= row.user.username %></td>
+                <td>
+                  <div class="user-cell">
+                    <span class="user-name"><%= row.user.username %></span>
+                    <% if (row.user.email) { %>
+                      <span class="user-email"><%= row.user.email %></span>
+                    <% } %>
+                  </div>
+                </td>
                 <td><%= row.formattedTotal %></td>
                 <td>
                   <a
@@ -60,7 +73,9 @@
                   </a>
                 </td>
                 <td>
-                  <a class="btn secondary" href="/admin/export?userId=<%= row.user.id %>&year=<%= targetYear %>&month=<%= targetMonth %>">Excel出力</a>
+                  <a class="btn secondary" href="/admin/export?userId=<%= row.user.id %>&year=<%= targetYear %>&month=<%= targetMonth %>">
+                    Excel出力
+                  </a>
                 </td>
               </tr>
             <% }); %>

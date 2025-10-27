@@ -160,6 +160,11 @@ body {
   color: var(--danger);
 }
 
+.flash.info {
+  background: #e8f1ff;
+  color: var(--primary);
+}
+
 .table {
   width: 100%;
   border-collapse: collapse;
@@ -214,6 +219,114 @@ body {
 .btn.danger {
   background: #fde8e2;
   color: var(--danger);
+}
+
+.auth-container {
+  max-width: 520px;
+  align-items: stretch;
+}
+
+.form-note {
+  font-size: 0.9rem;
+  color: #555555;
+  line-height: 1.6;
+}
+
+.form-links {
+  margin-top: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.form-links .link {
+  color: var(--primary);
+  text-decoration: none;
+}
+
+.form-links .link:hover {
+  text-decoration: underline;
+}
+
+.form-field-inline {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.form-field-inline label {
+  flex: 1 1 160px;
+}
+
+.highlight-card {
+  border-left: 4px solid var(--primary);
+}
+
+.definition-list {
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.definition-list div {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.definition-list dt {
+  font-size: 0.85rem;
+  color: #666666;
+}
+
+.definition-list dd {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.code-large {
+  font-family: 'Fira Code', 'Source Code Pro', monospace;
+  font-size: 1.1rem;
+}
+
+.muted {
+  color: #777777;
+  margin-left: 0.4rem;
+  font-size: 0.9rem;
+}
+
+.user-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.user-name {
+  font-weight: 600;
+}
+
+.user-email {
+  font-size: 0.85rem;
+  color: #555555;
+}
+
+.status-cell {
+  font-weight: 600;
+}
+
+.status-active {
+  color: var(--success);
+}
+
+.status-expired,
+.status-exhausted,
+.status-disabled {
+  color: var(--danger);
+}
+
+.inline-form {
+  display: inline;
 }
 
 @media (max-width: 600px) {

@@ -1,7 +1,4 @@
-const {
-  getAllWorkSessionsByUser,
-  getAllEmployees,
-} = require('../db');
+const { getAllWorkSessionsByUser, getAllEmployeesByTenant } = require('../db');
 const {
   toZonedDateTime,
   dateKey,
@@ -163,8 +160,8 @@ function getUserMonthlyDetailedSessions(userId, year, month) {
   return { days: summary, totalMinutes, formattedTotal: formatMinutesToHM(totalMinutes) };
 }
 
-function getMonthlySummaryForAllEmployees(year, month) {
-  const employees = getAllEmployees();
+function getMonthlySummaryForAllEmployees(tenantId, year, month) {
+  const employees = getAllEmployeesByTenant(tenantId);
   return employees.map((employee) => {
     const summary = getUserMonthlySummary(employee.id, year, month);
     return {

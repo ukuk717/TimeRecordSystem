@@ -10,16 +10,17 @@
   <header class="app-header">
     <h1>勤怠管理システム</h1>
   </header>
-  <main class="container">
+  <main class="container auth-container">
     <% if (flash) { %>
       <div class="flash <%= flash.type %>"><%= flash.message %></div>
     <% } %>
     <section class="card">
       <h2>ログイン</h2>
       <form method="post" action="/login" class="form">
+        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
         <label class="form-field">
-          <span>ユーザー名</span>
-          <input type="text" name="username" autocomplete="username" required>
+          <span>メールアドレス</span>
+          <input type="email" name="email" autocomplete="username" required>
         </label>
         <label class="form-field">
           <span>パスワード</span>
@@ -27,8 +28,15 @@
         </label>
         <button type="submit" class="btn primary">ログイン</button>
       </form>
+      <p class="form-note">
+        パスワードは <strong><%= minPasswordLength %> 文字以上</strong> で、英字・数字・記号をすべて含めてください。<br>
+        ログインに <strong><%= lockLimit %> 回</strong> 連続で失敗すると、<strong><%= lockMinutes %> 分間</strong> ロックされます。
+      </p>
+      <div class="form-links">
+        <a class="link" href="/register">新規アカウントを作成する</a>
+        <a class="link" href="/password/reset">パスワードをお忘れの場合</a>
+      </div>
     </section>
   </main>
 </body>
 </html>
-

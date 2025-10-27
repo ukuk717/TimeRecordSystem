@@ -11,8 +11,9 @@
     <h1>勤怠管理システム</h1>
     <nav>
       <span class="nav-user"><%= currentUser.username %>さん</span>
-      <a href="/employee/password" class="nav-link">パスワード変更</a>
+      <a href="/password/change" class="nav-link">パスワード変更</a>
       <form method="post" action="/logout" class="nav-form">
+        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
         <button type="submit" class="btn link">ログアウト</button>
       </form>
     </nav>
@@ -33,6 +34,7 @@
         <% } %>
       </p>
       <form method="post" action="/employee/record">
+        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
         <button type="submit" class="btn primary">
           <% if (openSession) { %>
             勤務終了を記録
@@ -100,4 +102,3 @@
   </main>
 </body>
 </html>
-

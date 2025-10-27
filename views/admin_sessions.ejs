@@ -8,11 +8,13 @@
 </head>
 <body>
   <header class="app-header">
-    <h1>勤怠管理システム - 管理者</h1>
+    <h1>勤怠管理システム - テナント管理者</h1>
     <nav>
       <a href="/admin" class="nav-link">ダッシュボード</a>
-      <a href="/admin/users/new" class="nav-link">従業員登録</a>
+      <a href="/admin/role-codes" class="nav-link">ロールコード管理</a>
+      <a href="/password/change" class="nav-link">パスワード変更</a>
       <form method="post" action="/logout" class="nav-form">
+        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
         <button type="submit" class="btn link">ログアウト</button>
       </form>
     </nav>
@@ -27,6 +29,9 @@
       <p>
         対象従業員:
         <strong><%= employee.username %></strong>
+        <% if (employee.email) { %>
+          <span class="muted">(<%= employee.email %>)</span>
+        <% } %>
       </p>
       <form method="get" action="/admin/employees/<%= employee.id %>/sessions" class="form form-inline">
         <label>
@@ -52,6 +57,7 @@
         action="/admin/employees/<%= employee.id %>/sessions<%= queryString %>"
         class="form form-inline session-add-form"
       >
+        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
         <label class="form-field">
           <span>開始日時</span>
           <input type="datetime-local" name="startTime" required>
@@ -130,7 +136,9 @@
             id="session-form-<%= session.id %>"
             method="post"
             action="/admin/employees/<%= employee.id %>/sessions/<%= session.id %>/update<%= queryString %>"
-          ></form>
+          >
+            <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+          </form>
         <% }); %>
       <% } %>
     </section>

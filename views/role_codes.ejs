@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ロールコード管理 | 勤怠管理システム</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <h1>勤怠管理システム - テナント管理者</h1>
+    <nav>
+      <a href="/admin" class="nav-link">ダッシュボード</a>
+      <a href="/password/change" class="nav-link">パスワード変更</a>
+      <form method="post" action="/logout" class="nav-form">
+        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+        <button type="submit" class="btn link">ログアウト</button>
+      </form>
+    </nav>
+  </header>
+  <main class="container">
+    <% if (flash) { %>
+      <div class="flash <%= flash.type %>"><%= flash.message %></div>
+    <% } %>
+
+    <% if (generated) { %>
+      <section class="card highlight-card">
+        <h2>発行したロールコード</h2>
+        <dl class="definition-list">
+          <div>
+            <dt>コード</dt>
+            <dd><code class="code-large"><%= generated.code %></code></dd>
+          </div>
+          <div>
+            <dt>有効期限</dt>
+            <dd>
+              <% if (generated.expiresDisplay) { %>
+                <%= generated.expiresDisplay %>
+              <% } else { %>
+                なし
+              <% } %>
+            </dd>
+          </div>
+          <div>
+            <dt>使用回数上限</dt>
+            <dd><%= Number.isInteger(generated.maxUses) ? generated.maxUses : '無制限' %></dd>
+          </div>
+        </dl>
+        <p class="form-note">従業員にコードを共有し、期限内・上限内に登録してもらってください。</p>
+      </section>
+    <% } %>
+
+    <section class="card">
+      <h2>ロールコードを発行</h2>
+      <form method="post" action="/admin/role-codes" class="form form-inline">
+        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+        <label class="form-field">
+          <span>有効期限（任意）</span>
+          <input type="datetime-local" name="expiresAt">
+        </label>
+        <label class="form-field">
+          <span>使用回数上限（任意）</span>
+          <input type="number" name="maxUses" min="1">
+        </label>
+        <button type="submit" class="btn primary">コードを発行</button>
+      </form>
+      <p class="form-note">
+        コードは大文字英数字で生成されます。使用回数上限に到達すると自動的に利用できなくなります。<br>
+        無効化したコードは再度有効化できません。
+      </p>
+    </section>
+
+    <section class="card">
+      <h2>発行済みロールコード</h2>
+      <table class="table">
+        <thead>
+          <tr>
+            <th>コード</th>
+            <th>状態</th>
+            <th>有効期限</th>
+            <th>使用状況</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          <% if (!codes || codes.length === 0) { %>
+            <tr><td colspan="5">まだロールコードが発行されていません。</td></tr>
+          <% } else { %>
+            <% codes.forEach(function(code) { %>
+              <% const limitDisplay = Number.isInteger(code.max_uses) ? code.max_uses : '無制限'; %>
+              <tr>
+                <td><code><%= code.code %></code></td>
+                <td class="status-cell status-<%= code.status %>">
+                  <% if (code.status === 'active') { %>
+                    有効
+                  <% } else if (code.status === 'expired') { %>
+                    期限切れ
+                  <% } else if (code.status === 'exhausted') { %>
+                    上限到達
+                  <% } else { %>
+                    無効化済み
+                  <% } %>
+                </td>
+                <td><%= code.expiresDisplay || 'なし' %></td>
+                <td><%= code.usage_count %> / <%= limitDisplay %></td>
+                <td>
+                  <% if (code.status === 'active') { %>
+                    <form method="post" action="/admin/role-codes/<%= code.id %>/disable" class="inline-form">
+                      <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                      <button type="submit" class="btn danger">無効化</button>
+                    </form>
+                  <% } else { %>
+                    <span class="muted">操作なし</span>
+                  <% } %>
+                </td>
+              </tr>
+            <% }); %>
+          <% } %>
+        </tbody>
+      </table>
+    </section>
+  </main>
+</body>
+</html>

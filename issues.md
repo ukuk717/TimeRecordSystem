@@ -1,0 +1,41 @@
+-fixed-
+
+- platform_tenants.ejs
+    - Add CSRF protection to the tenant registration form.
+    - Add CSRF protection to the logout form.
+    - Escape generated tenant data to prevent XSS.
+    - Add error handling for invalid date values.
+- role_codes.ejs
+    - Add CSRF protection to all forms.
+    - Validate dates before formatting.
+    - Use explicit null check instead of || operator.
+    - Validate code.status server-side to prevent XSS.
+- app.js
+    - Critical: Remove default session secret.
+    - Ensure password reset links are not logged in production.
+- userService.js
+    - Fix modulo bias in random character selection.
+    - Ensure generated password meets validation requirements.
+- log.md
+    - Remove hardcoded default credentials from documentation and implementation.
+    - Clarify sensitive data handling in logging and backup procedures.
+- db.js
+    - Critical: Table creation order violates foreign key constraints.
+- password_reset_requests.ejs
+    - Add CSRF protection to the form.
+- register.ejs
+    - Clarify roleCode character set requirements.
+
+-needs fix-
+- app.js
+    - Ephemeral session secret will invalidate sessions on restart.
+    - Add 'secure' flag to session cookies in production.
+    - Fix modulo bias in random code generation.
+    - Validate host header to prevent host header injection.
+    - Replace deprecated 'csurf' package with actively maintained alternative.
+    - Move CSRF protection after static file middleware.
+- db.js
+    - Consider adding constraints to prevent orphaned users and duplicate usernames.
+    - Email normalization inconsistency creates a risk.
+    - Fix garbled error message.
+    - Remove the UTF-8 BOM character.

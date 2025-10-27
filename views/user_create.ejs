@@ -12,6 +12,7 @@
     <nav>
       <a href="/admin" class="nav-link">管理者メニューへ戻る</a>
       <form method="post" action="/logout" class="nav-form">
+        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
         <button type="submit" class="btn link">ログアウト</button>
       </form>
     </nav>
@@ -23,6 +24,7 @@
     <section class="card">
       <h2>新規従業員</h2>
       <form method="post" action="/admin/users" class="form">
+        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
         <label class="form-field">
           <span>ユーザー名</span>
           <input type="text" name="username" required autocomplete="off">
@@ -38,4 +40,3 @@
   </main>
 </body>
 </html>
-

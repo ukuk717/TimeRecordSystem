@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>テナント管理 | 勤怠管理システム</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <h1>勤怠管理システム - プラットフォーム管理者</h1>
+    <nav>
+      <a href="/password/change" class="nav-link">パスワード変更</a>
+      <form method="post" action="/logout" class="nav-form">
+        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+        <button type="submit" class="btn link">ログアウト</button>
+      </form>
+    </nav>
+  </header>
+  <main class="container">
+    <% if (flash) { %>
+      <div class="flash <%= flash.type %>"><%= flash.message %></div>
+    <% } %>
+
+    <% if (generated) { %>
+      <section class="card highlight-card">
+        <h2>作成したテナント情報</h2>
+        <dl class="definition-list">
+          <div>
+            <dt>テナントUID</dt>
+            <dd><code class="code-large"><%= generated.tenantUid %></code></dd>
+          </div>
+          <div>
+            <dt>管理者メールアドレス</dt>
+            <dd><%= generated.adminEmail %></dd>
+          </div>
+          <div>
+            <dt>初期パスワード</dt>
+            <dd><code class="code-large"><%= generated.initialPassword %></code></dd>
+          </div>
+        </dl>
+        <p class="form-note">
+          初期パスワードはこの画面にのみ表示されます。テナント管理者に安全な方法で共有し、初回ログイン後に必ず変更するよう伝えてください。
+        </p>
+      </section>
+    <% } %>
+
+    <section class="card">
+      <h2>テナントを登録</h2>
+      <form method="post" action="/platform/tenants" class="form">
+        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+        <label class="form-field">
+          <span>テナント名</span>
+          <input type="text" name="tenantName" required>
+        </label>
+        <label class="form-field">
+          <span>連絡先メールアドレス</span>
+          <input type="email" name="contactEmail" required>
+        </label>
+        <div class="form-field form-field-inline">
+          <label>
+            <span>管理者（姓）</span>
+            <input type="text" name="adminLastName" required autocomplete="family-name">
+          </label>
+          <label>
+            <span>管理者（名）</span>
+            <input type="text" name="adminFirstName" required autocomplete="given-name">
+          </label>
+        </div>
+        <label class="form-field">
+          <span>管理者メールアドレス</span>
+          <input type="email" name="adminEmail" required autocomplete="email">
+        </label>
+        <p class="form-note">
+          初期パスワードは <strong><%= minPasswordLength %> 文字以上</strong>、英字・数字・記号を含むランダム値で自動生成されます。
+        </p>
+        <button type="submit" class="btn primary">テナントを作成</button>
+      </form>
+    </section>
+
+    <section class="card">
+      <h2>登録済みテナント</h2>
+      <table class="table">
+        <thead>
+          <tr>
+            <th>テナントUID</th>
+            <th>名称</th>
+            <th>連絡先メール</th>
+            <th>登録日時</th>
+          </tr>
+        </thead>
+        <tbody>
+          <% if (!tenants || tenants.length === 0) { %>
+            <tr><td colspan="4">登録済みテナントはありません。</td></tr>
+          <% } else { %>
+            <% tenants.forEach(function(tenant) { %>
+              <tr>
+                <td><code><%= tenant.tenant_uid %></code></td>
+                <td><%= tenant.name || '名称未設定' %></td>
+                <td><%= tenant.contact_email || '未設定' %></td>
+                <td><%= tenant.createdAtDisplay || '---' %></td>
+              </tr>
+            <% }); %>
+          <% } %>
+        </tbody>
+      </table>
+    </section>
+  </main>
+</body>
+</html>
