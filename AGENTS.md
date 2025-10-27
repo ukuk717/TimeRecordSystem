@@ -13,3 +13,4 @@
 ## When Updating This Guide
 - Keep these instructions until the root cause of the hang is fixed and confirmed.
 - If you find a safe workaround for running tests, update this file with clear steps before removing the warning above.
+- All responses to users must be in Japanese. If the output is in English, it must be translated before output.

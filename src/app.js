@@ -1,8 +1,9 @@
 const express = require('express');
+const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const session = require('express-session');
-const csrf = require('csurf');
+const Tokens = require('csrf');
 const SQLiteStore = require('better-sqlite3-session-store')(session);
 const XlsxPopulate = require('xlsx-populate');
 
@@ -64,6 +65,40 @@ const {
 
 const app = express();
 const isTestEnv = process.env.NODE_ENV === 'test';
+const tokens = new Tokens({ saltLength: 16, secretLength: 32 });
+
+function resolveBaseUrl() {
+  const fallback = `http://localhost:${process.env.PORT || 3000}`;
+  const candidate = process.env.APP_BASE_URL || fallback;
+  try {
+    const parsed = new URL(candidate);
+    if (!parsed.protocol || (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')) {
+      throw new Error('Only http and https protocols are supported.');
+    }
+    return parsed;
+  } catch (error) {
+    if (!isTestEnv) {
+      // eslint-disable-next-line no-console
+      console.warn(`[config] Invalid APP_BASE_URL "${candidate}". Falling back to ${fallback}.`, error);
+    }
+    return new URL(fallback);
+  }
+}
+
+const appBaseUrl = resolveBaseUrl();
+const baseHostname = appBaseUrl.hostname.toLowerCase();
+const allowedHostnames = (() => {
+  const defaults = new Set(['localhost', '127.0.0.1', '[::1]']);
+  if (baseHostname) {
+    defaults.add(baseHostname);
+  }
+  const configured = (process.env.ALLOWED_HOSTS || '')
+    .split(',')
+    .map((host) => host.trim().toLowerCase())
+    .filter(Boolean);
+  configured.forEach((host) => defaults.add(host));
+  return Array.from(defaults);
+})();
 
 const OVERLAP_ERROR_MESSAGE =
   '他の勤怠記録と時間が重複しています。修正対象の時間帯を見直してください。';
@@ -88,17 +123,126 @@ if (!isTestEnv) {
   };
 }
 
-const sessionSecret = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
-if (!process.env.SESSION_SECRET && process.env.NODE_ENV !== 'test') {
-  // eslint-disable-next-line no-console
-  console.warn('[session] SESSION_SECRET is not set; using a random ephemeral secret.');
+const SESSION_SECRET_PATH = path.join(__dirname, '..', 'data', 'session-secret.txt');
+
+function loadSessionSecret() {
+  const envSecret = process.env.SESSION_SECRET;
+  if (envSecret && envSecret.trim()) {
+    return envSecret.trim();
+  }
+
+  const secretDir = path.dirname(SESSION_SECRET_PATH);
+  try {
+    fs.mkdirSync(secretDir, { recursive: true });
+  } catch (error) {
+    if (!isTestEnv) {
+      // eslint-disable-next-line no-console
+      console.warn('[session] Failed to ensure session secret directory exists.', error);
+    }
+  }
+
+  try {
+    const fileSecret = fs.readFileSync(SESSION_SECRET_PATH, 'utf8').trim();
+    if (fileSecret) {
+      if (!isTestEnv) {
+        // eslint-disable-next-line no-console
+        console.info(`[session] Loaded session secret from ${SESSION_SECRET_PATH}.`);
+      }
+      return fileSecret;
+    }
+  } catch (error) {
+    if (error.code !== 'ENOENT' && !isTestEnv) {
+      // eslint-disable-next-line no-console
+      console.warn('[session] Failed to read session secret file.', error);
+    }
+  }
+
+  const generatedSecret = crypto.randomBytes(32).toString('hex');
+  try {
+    fs.writeFileSync(SESSION_SECRET_PATH, `${generatedSecret}\n`, {
+      encoding: 'utf8',
+      mode: 0o600,
+    });
+    if (!isTestEnv) {
+      // eslint-disable-next-line no-console
+      console.info(`[session] Generated new session secret at ${SESSION_SECRET_PATH}.`);
+    }
+  } catch (error) {
+    if (!isTestEnv) {
+      // eslint-disable-next-line no-console
+      console.warn('[session] Failed to persist session secret to disk.', error);
+    }
+  }
+  if (!isTestEnv) {
+    // eslint-disable-next-line no-console
+    console.warn('[session] SESSION_SECRET is not set; using generated secret stored on disk.');
+  }
+  return generatedSecret;
 }
+
+const sessionSecret = loadSessionSecret();
 const sessionStore = new SQLiteStore(sessionStoreOptions);
-const csrfProtection = csrf();
 
 app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, '..', 'views'));
 
+function validateHostHeader(req, res, next) {
+  const rawHost = (req.headers.host || '').trim().toLowerCase();
+  if (!rawHost) {
+    return res.status(400).send('Invalid Host header');
+  }
+  const hostname = rawHost.split(':')[0];
+  if (!allowedHostnames.includes(hostname)) {
+    if (!isTestEnv) {
+      // eslint-disable-next-line no-console
+      console.warn(`[security] Blocked request with disallowed host header: ${rawHost}`);
+    }
+    return res.status(400).send('Invalid Host header');
+  }
+  return next();
+}
+
+const safeMethods = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+function csrfProtection(req, res, next) {
+  if (!req.session) {
+    throw new Error('Session middleware must be initialized before CSRF protection.');
+  }
+
+  if (!req.session.csrfSecret) {
+    req.session.csrfSecret = tokens.secretSync();
+  }
+
+  req.csrfToken = function csrfToken() {
+    if (!req._csrfTokenCache) {
+      req._csrfTokenCache = tokens.create(req.session.csrfSecret);
+    }
+    return req._csrfTokenCache;
+  };
+
+  if (safeMethods.has(req.method)) {
+    return next();
+  }
+
+  const token =
+    (req.body && req.body._csrf) ||
+    (req.query && req.query._csrf) ||
+    req.headers['csrf-token'] ||
+    req.headers['xsrf-token'] ||
+    req.headers['x-csrf-token'] ||
+    req.headers['x-xsrf-token'];
+
+  if (!token || !tokens.verify(req.session.csrfSecret, token)) {
+    const error = new Error('Invalid CSRF token');
+    error.code = 'EBADCSRFTOKEN';
+    return next(error);
+  }
+
+  return next();
+}
+
+app.use(validateHostHeader);
+app.use(express.static(path.join(__dirname, '..', 'public')));
 app.use(express.urlencoded({ extended: false }));
 app.use(
   session({
@@ -110,17 +254,19 @@ app.use(
       maxAge: 1000 * 60 * 60 * 12,
       httpOnly: true,
       sameSite: 'lax',
+      secure: process.env.NODE_ENV === 'production',
     },
   })
 );
 
 app.use(csrfProtection);
-app.use(express.static(path.join(__dirname, '..', 'public')));
 
 app.use((req, res, next) => {
+  const csrfTokenGenerator = typeof req.csrfToken === 'function' ? req.csrfToken : null;
+  const csrfToken = csrfTokenGenerator ? csrfTokenGenerator() : null;
   res.locals.currentUser = req.session.user || null;
   res.locals.flash = req.session.flash || null;
-  res.locals.csrfToken = typeof req.csrfToken === 'function' ? req.csrfToken() : null;
+  res.locals.csrfToken = csrfToken;
   delete req.session.flash;
   next();
 });
@@ -496,7 +642,7 @@ app.post('/password/reset', (req, res) => {
   const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
   createPasswordResetToken(user.id, token, expiresAt);
 
-  const resetLink = `${req.protocol}://${req.get('host')}/password/reset/${token}`;
+  const resetLink = new URL(`/password/reset/${token}`, appBaseUrl).toString();
   if (process.env.NODE_ENV !== 'production') {
     console.info(`[password-reset] ${email} 用リセットリンク: ${resetLink}`);
   } else {

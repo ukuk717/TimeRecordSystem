@@ -12,7 +12,7 @@
     - Validate code.status server-side to prevent XSS.
 - app.js
     - Critical: Remove default session secret.
-    - Ensure password reset links are not logged in production.
+    - Ensure password reset links are not logged~~ in production.~~
 - userService.js
     - Fix modulo bias in random character selection.
     - Ensure generated password meets validation requirements.
@@ -26,16 +26,17 @@
 - register.ejs
     - Clarify roleCode character set requirements.
 
--needs fix-
+-fixed-
 - app.js
     - Ephemeral session secret will invalidate sessions on restart.
     - Add 'secure' flag to session cookies in production.
-    - Fix modulo bias in random code generation.
+    - ~~Fix modulo bias in random code generation.~~
     - Validate host header to prevent host header injection.
     - Replace deprecated 'csurf' package with actively maintained alternative.
     - Move CSRF protection after static file middleware.
 - db.js
-    - Consider adding constraints to prevent orphaned users and duplicate usernames.
-    - Email normalization inconsistency creates a risk.
-    - Fix garbled error message.
-    - Remove the UTF-8 BOM character.
+    - ~~Consider adding constraints to prevent orphaned users and duplicate usernames.~~
+    - ~~Email normalization inconsistency creates a risk.~~
+    - ~~Fix garbled error message.~~
+    - ~~Remove the UTF-8 BOM character.~~
+
