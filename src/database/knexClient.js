@@ -35,7 +35,7 @@ function resolveClientName(provider) {
   if (normalized === 'sqlite' || normalized === 'sqlite3') {
     return 'sqlite3';
   }
-  throw new Error(`Unsupported DB_PROVIDER "${provider}". Use postgres or mysql.`);
+  throw new Error(`Unsupported DB_PROVIDER "${provider}". Use postgres, mysql, or sqlite.`);
 }
 
 function buildConnectionConfig() {
@@ -88,7 +88,7 @@ function buildConnectionConfig() {
   }
 
   const sslEnabled = toBoolean(process.env.DB_SSL, provider === 'pg');
-  const rejectUnauthorized = toBoolean(process.env.DB_SSL_REJECT_UNAUTHORIZED, false);
+  const rejectUnauthorized = toBoolean(process.env.DB_SSL_REJECT_UNAUTHORIZED, true);
 
   return {
     client: provider,

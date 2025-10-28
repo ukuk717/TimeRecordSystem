@@ -1,6 +1,14 @@
 process.env.TZ = process.env.APP_TIMEZONE || 'Asia/Tokyo';
 
-const app = require('./src/app');
+let app;
+try {
+  // eslint-disable-next-line global-require
+  app = require('./src/app');
+} catch (error) {
+  // eslint-disable-next-line no-console
+  console.error('[bootstrap] Failed to load application.', error);
+  process.exit(1);
+}
 const { initializeApp } = require('./src/bootstrap');
 
 const PORT = process.env.PORT || 3000;
@@ -15,6 +23,6 @@ const PORT = process.env.PORT || 3000;
   } catch (error) {
     // eslint-disable-next-line no-console
     console.error('[bootstrap] Failed to initialize server.', error);
-    process.exitCode = 1;
+    process.exit(1);
   }
 })();

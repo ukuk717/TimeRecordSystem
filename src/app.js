@@ -1,4 +1,4 @@
-﻿const express = require('express');
+const express = require('express');
 const path = require('path');
 const crypto = require('crypto');
 const session = require('express-session');
@@ -100,7 +100,7 @@ const allowedHostnames = (() => {
 })();
 
 const OVERLAP_ERROR_MESSAGE =
-  '莉悶・蜍､諤險倬鹸縺ｨ譎る俣縺碁㍾隍・＠縺ｦ縺・∪縺吶ゆｿｮ豁｣蟇ｾ雎｡縺ｮ譎る俣蟶ｯ繧定ｦ狗峩縺励※縺上□縺輔＞縲・;
+  '他の勤怠記録と時間が重複しています。修正対象の時間帯を見直してください。';
 const LOGIN_FAILURE_LIMIT = 5;
 const LOGIN_LOCK_MINUTES = 15;
 const ROLE_CODE_LENGTH = 16;
@@ -319,7 +319,7 @@ app.use((req, res, next) => {
   if (req.method !== 'GET') {
     return res.redirect('/password/change');
   }
-  setFlash(req, 'info', '蛻晏屓繝ｭ繧ｰ繧､繝ｳ縺ｮ縺溘ａ繝代せ繝ｯ繝ｼ繝峨ｒ螟画峩縺励※縺上□縺輔＞縲・);
+  setFlash(req, 'info', '初回ログインのためパスワードを変更してください。');
   return res.redirect('/password/change');
 });
 
@@ -389,11 +389,11 @@ async function hasOverlappingSessions(userId, startIso, endIso, excludeSessionId
 function requireRole(...roles) {
   return (req, res, next) => {
     if (!req.session.user) {
-      setFlash(req, 'error', '繝ｭ繧ｰ繧､繝ｳ縺励※縺上□縺輔＞縲・);
+      setFlash(req, 'error', 'ログインしてください。');
       return res.redirect('/login');
     }
     if (!roles.includes(req.session.user.role)) {
-      setFlash(req, 'error', '讓ｩ髯舌′縺ゅｊ縺ｾ縺帙ｓ縲・);
+      setFlash(req, 'error', '権限がありません。');
       return res.redirect('/');
     }
     return next();
@@ -402,7 +402,7 @@ function requireRole(...roles) {
 
 function ensureTenantContext(req, res, next) {
   if (!req.session.user || !req.session.user.tenantId) {
-    setFlash(req, 'error', '繝・リ繝ｳ繝域ュ蝣ｱ縺悟ｭ伜惠縺励∪縺帙ｓ縲・);
+    setFlash(req, 'error', 'テナント情報が存在しません。');
     return res.redirect('/');
   }
   return next();
@@ -426,12 +426,12 @@ async function getEmployeeForTenantAdmin(req, res) {
   const employeeId = Number.parseInt(req.params.userId, 10);
   const employee = Number.isNaN(employeeId) ? null : await getUserById(employeeId);
   if (!employee || employee.role !== ROLES.EMPLOYEE) {
-    setFlash(req, 'error', '蠕捺･ｭ蜩｡縺瑚ｦ九▽縺九ｊ縺ｾ縺帙ｓ縲・);
+    setFlash(req, 'error', '従業員が見つかりません。');
     res.redirect('/admin');
     return null;
   }
   if (employee.tenant_id !== req.session.user.tenantId) {
-    setFlash(req, 'error', '莉悶ユ繝翫Φ繝医・蠕捺･ｭ蜩｡縺ｫ縺ｯ繧｢繧ｯ繧ｻ繧ｹ縺ｧ縺阪∪縺帙ｓ縲・);
+    setFlash(req, 'error', '他テナントの従業員にはアクセスできません。');
     res.redirect('/admin');
     return null;
   }
@@ -441,15 +441,15 @@ async function getEmployeeForTenantAdmin(req, res) {
 function validateNameField(label, value) {
   const trimmed = (value || '').trim();
   if (!trimmed) {
-    return { valid: false, message: `${label}繧貞・蜉帙＠縺ｦ縺上□縺輔＞縲Ａ };
+    return { valid: false, message: `${label}を入力してください。` };
   }
   if (trimmed.length > 64) {
-    return { valid: false, message: `${label}縺ｯ64譁・ｭ嶺ｻ･蜀・〒蜈･蜉帙＠縺ｦ縺上□縺輔＞縲Ａ };
+    return { valid: false, message: `${label}は64文字以内で入力してください。` };
   }
   for (let i = 0; i < trimmed.length; i += 1) {
     const code = trimmed.charCodeAt(i);
     if (code < 0x20 || code === 0x7f) {
-      return { valid: false, message: `${label}縺ｫ蛻ｶ蠕｡譁・ｭ励・菴ｿ逕ｨ縺ｧ縺阪∪縺帙ｓ縲Ａ };
+      return { valid: false, message: `${label}に制御文字は使用できません。` };
     }
   }
   return { valid: true, value: trimmed };
@@ -487,13 +487,13 @@ app.post('/login', async (req, res) => {
   const password = (req.body.password || '').trim();
 
   if (!email || !password) {
-    setFlash(req, 'error', '繝｡繝ｼ繝ｫ繧｢繝峨Ξ繧ｹ縺ｨ繝代せ繝ｯ繝ｼ繝峨ｒ蜈･蜉帙＠縺ｦ縺上□縺輔＞縲・);
+    setFlash(req, 'error', 'メールアドレスとパスワードを入力してください。');
     return res.redirect('/login');
   }
 
   const user = await getUserByEmail(email);
   if (!user) {
-    setFlash(req, 'error', '繝｡繝ｼ繝ｫ繧｢繝峨Ξ繧ｹ縺ｾ縺溘・繝代せ繝ｯ繝ｼ繝峨′豁｣縺励￥縺ゅｊ縺ｾ縺帙ｓ縲・);
+    setFlash(req, 'error', 'メールアドレスまたはパスワードが正しくありません。');
     return res.redirect('/login');
   }
 
@@ -504,7 +504,7 @@ app.post('/login', async (req, res) => {
     setFlash(
       req,
       'error',
-      `繧｢繧ｫ繧ｦ繝ｳ繝医′繝ｭ繝・け縺輔ｌ縺ｦ縺・∪縺吶・{remainingMinutes}蛻・ｾ後↓蜀榊ｺｦ縺願ｩｦ縺励￥縺縺輔＞縲Ａ
+      `アカウントがロックされています。${remainingMinutes}分後に再度お試しください。`
     );
     return res.redirect('/login');
   }
@@ -520,14 +520,14 @@ app.post('/login', async (req, res) => {
       setFlash(
         req,
         'error',
-        `繝ｭ繧ｰ繧､繝ｳ縺ｫ${LOGIN_FAILURE_LIMIT}蝗樣｣邯壹〒螟ｱ謨励＠縺溘◆繧√・{LOGIN_LOCK_MINUTES}蛻・俣繝ｭ繝・け縺励∪縺励◆縲Ａ
+        `ログインに${LOGIN_FAILURE_LIMIT}回連続で失敗したため、${LOGIN_LOCK_MINUTES}分間ロックしました。`
       );
     } else {
       const remaining = Math.max(0, LOGIN_FAILURE_LIMIT - meta.failed_attempts);
       setFlash(
         req,
         'error',
-        `繝｡繝ｼ繝ｫ繧｢繝峨Ξ繧ｹ縺ｾ縺溘・繝代せ繝ｯ繝ｼ繝峨′豁｣縺励￥縺ゅｊ縺ｾ縺帙ｓ縲ゑｼ医≠縺ｨ${remaining}蝗槭〒繝ｭ繝・け・荏
+        `メールアドレスまたはパスワードが正しくありません。（あと${remaining}回でロックされます）`
       );
     }
     return res.redirect('/login');
@@ -543,11 +543,11 @@ app.post('/login', async (req, res) => {
 
   if (user.must_change_password) {
     req.session.user.mustChangePassword = true;
-    setFlash(req, 'info', '蛻晏屓繝ｭ繧ｰ繧､繝ｳ縺ｮ縺溘ａ繝代せ繝ｯ繝ｼ繝峨ｒ螟画峩縺励※縺上□縺輔＞縲・);
+    setFlash(req, 'info', '初回ログインのためパスワードを変更してください。');
     return res.redirect('/password/change');
   }
 
-  setFlash(req, 'success', '繝ｭ繧ｰ繧､繝ｳ縺励∪縺励◆縲・);
+  setFlash(req, 'success', 'ログインしました。');
   return res.redirect('/');
 });
 
@@ -566,49 +566,49 @@ app.get('/register', (req, res) => {
 
 app.post('/register', async (req, res) => {
   const roleCodeValue = (req.body.roleCode || '').trim().toUpperCase();
-  const firstNameResult = validateNameField('蜷・, req.body.firstName);
+  const firstNameResult = validateNameField('名', req.body.firstName);
   if (!firstNameResult.valid) {
     setFlash(req, 'error', firstNameResult.message);
     return res.redirect('/register');
   }
-  const lastNameResult = validateNameField('蟋・, req.body.lastName);
+  const lastNameResult = validateNameField('姓', req.body.lastName);
   if (!lastNameResult.valid) {
     setFlash(req, 'error', lastNameResult.message);
     return res.redirect('/register');
   }
   const email = normalizeEmail(req.body.email);
   if (!email) {
-    setFlash(req, 'error', '繝｡繝ｼ繝ｫ繧｢繝峨Ξ繧ｹ繧貞・蜉帙＠縺ｦ縺上□縺輔＞縲・);
+    setFlash(req, 'error', 'メールアドレスを入力してください。');
     return res.redirect('/register');
   }
   const newPassword = req.body.password || '';
 
   if (!roleCodeValue) {
-    setFlash(req, 'error', '繝ｭ繝ｼ繝ｫ繧ｳ繝ｼ繝峨ｒ蜈･蜉帙＠縺ｦ縺上□縺輔＞縲・);
+    setFlash(req, 'error', 'ロールコードを入力してください。');
     return res.redirect('/register');
   }
 
   const roleCode = await getRoleCodeByCode(roleCodeValue);
   if (!roleCode) {
-    setFlash(req, 'error', '繝ｭ繝ｼ繝ｫ繧ｳ繝ｼ繝峨′辟｡蜉ｹ縺ｧ縺吶・);
+    setFlash(req, 'error', 'ロールコードが無効です。');
     return res.redirect('/register');
   }
   if (roleCode.is_disabled) {
-    setFlash(req, 'error', '縺薙・繝ｭ繝ｼ繝ｫ繧ｳ繝ｼ繝峨・辟｡蜉ｹ蛹悶＆繧後※縺・∪縺吶・);
+    setFlash(req, 'error', 'このロールコードは無効化されています。');
     return res.redirect('/register');
   }
   if (roleCode.expires_at && Date.parse(roleCode.expires_at) <= Date.now()) {
-    setFlash(req, 'error', '繝ｭ繝ｼ繝ｫ繧ｳ繝ｼ繝峨・譛牙柑譛滄剞縺悟・繧後※縺・∪縺吶・);
+    setFlash(req, 'error', 'ロールコードの有効期限が切れています。');
     return res.redirect('/register');
   }
   if (roleCode.max_uses !== null && roleCode.usage_count >= roleCode.max_uses) {
-    setFlash(req, 'error', '繝ｭ繝ｼ繝ｫ繧ｳ繝ｼ繝峨・蛻ｩ逕ｨ荳企剞縺ｫ驕斐＠縺ｦ縺・∪縺吶・);
+    setFlash(req, 'error', 'ロールコードの利用上限に達しています。');
     return res.redirect('/register');
   }
 
   const existingUser = await getUserByEmail(email);
   if (existingUser) {
-    setFlash(req, 'error', '縺薙・繝｡繝ｼ繝ｫ繧｢繝峨Ξ繧ｹ縺ｯ譌｢縺ｫ逋ｻ骭ｲ縺輔ｌ縺ｦ縺・∪縺吶・);
+    setFlash(req, 'error', 'このメールアドレスは既に登録されています。');
     return res.redirect('/register');
   }
 
@@ -620,7 +620,7 @@ app.post('/register', async (req, res) => {
 
   const tenant = await getTenantById(roleCode.tenant_id);
   if (!tenant) {
-    setFlash(req, 'error', '繝ｭ繝ｼ繝ｫ繧ｳ繝ｼ繝峨↓蟇ｾ蠢懊☆繧九ユ繝翫Φ繝医′隕九▽縺九ｊ縺ｾ縺帙ｓ縲・);
+    setFlash(req, 'error', 'ロールコードに対応するテナントが見つかりません。');
     return res.redirect('/register');
   }
 
@@ -646,11 +646,11 @@ app.post('/register', async (req, res) => {
     ) {
       await disableRoleCode(updatedRoleCode.id);
     }
-    setFlash(req, 'success', '繧｢繧ｫ繧ｦ繝ｳ繝医ｒ菴懈・縺励∪縺励◆縲ゅΟ繧ｰ繧､繝ｳ縺励※縺上□縺輔＞縲・);
+    setFlash(req, 'success', 'アカウントを作成しました。ログインしてください。');
     return res.redirect('/login');
   } catch (error) {
-    console.error('[register] 蠕捺･ｭ蜩｡繧｢繧ｫ繧ｦ繝ｳ繝井ｽ懈・縺ｫ螟ｱ謨励＠縺ｾ縺励◆', error);
-    setFlash(req, 'error', '繧｢繧ｫ繧ｦ繝ｳ繝井ｽ懈・荳ｭ縺ｫ繧ｨ繝ｩ繝ｼ縺檎匱逕溘＠縺ｾ縺励◆縲・);
+    console.error('[register] 従業員アカウント作成に失敗しました', error);
+    setFlash(req, 'error', 'アカウント作成中にエラーが発生しました。');
     return res.redirect('/register');
   }
 });
@@ -662,13 +662,13 @@ app.get('/password/reset', (req, res) => {
 app.post('/password/reset', async (req, res) => {
   const email = normalizeEmail(req.body.email);
   if (!email) {
-    setFlash(req, 'error', '繝｡繝ｼ繝ｫ繧｢繝峨Ξ繧ｹ繧貞・蜉帙＠縺ｦ縺上□縺輔＞縲・);
+    setFlash(req, 'error', 'メールアドレスを入力してください。');
     return res.redirect('/password/reset');
   }
 
   const user = await getUserByEmail(email);
   if (!user) {
-    setFlash(req, 'info', '繝代せ繝ｯ繝ｼ繝峨Μ繧ｻ繝・ヨ謇矩・ｒ繝｡繝ｼ繝ｫ繧｢繝峨Ξ繧ｹ縺ｸ騾∽ｿ｡縺励∪縺励◆縲・);
+    setFlash(req, 'info', 'パスワードリセット用のリンクをメールアドレスへ送信しました。（開発環境ではサーバーログを確認してください）');
     return res.redirect('/login');
   }
 
@@ -678,15 +678,15 @@ app.post('/password/reset', async (req, res) => {
 
   const resetLink = new URL(`/password/reset/${token}`, appBaseUrl).toString();
   if (process.env.NODE_ENV !== 'production') {
-    console.info(`[password-reset] ${email} 逕ｨ繝ｪ繧ｻ繝・ヨ繝ｪ繝ｳ繧ｯ: ${resetLink}`);
+    console.info(`[password-reset] ${email} 用リセットリンク: ${resetLink}`);
   } else {
-    console.info(`[password-reset] ${email} 縺ｸ縺ｮ繝ｪ繧ｻ繝・ヨ謇狗ｶ壹″繧定ｨ倬鹸縺励∪縺励◆`);
+    console.info(`[password-reset] ${email} へのリセット手続きを記録しました`);
   }
 
   setFlash(
     req,
     'info',
-    '繝代せ繝ｯ繝ｼ繝峨Μ繧ｻ繝・ヨ逕ｨ縺ｮ繝ｪ繝ｳ繧ｯ繧偵Γ繝ｼ繝ｫ繧｢繝峨Ξ繧ｹ縺ｸ騾∽ｿ｡縺励∪縺励◆縲ゑｼ郁ｩｦ菴懃腸蠅・〒縺ｯ繧ｵ繝ｼ繝舌・繝ｭ繧ｰ繧堤｢ｺ隱阪＠縺ｦ縺上□縺輔＞・・
+    'パスワードリセット用のリンクをメールアドレスへ送信しました。（開発環境ではサーバーログを確認してください）'
   );
   return res.redirect('/login');
 });
@@ -694,11 +694,11 @@ app.post('/password/reset', async (req, res) => {
 app.get('/password/reset/:token', async (req, res) => {
   const record = await getPasswordResetToken(req.params.token);
   if (!record) {
-    setFlash(req, 'error', '繝ｪ繧ｻ繝・ヨ繝ｪ繝ｳ繧ｯ縺檎┌蜉ｹ縺ｧ縺吶ょ・蠎ｦ謇狗ｶ壹″繧定｡後▲縺ｦ縺上□縺輔＞縲・);
+    setFlash(req, 'error', 'リセットリンクが無効です。再度手続きを行ってください。');
     return res.redirect('/password/reset');
   }
   if (Date.parse(record.expires_at) <= Date.now()) {
-    setFlash(req, 'error', '繝ｪ繧ｻ繝・ヨ繝ｪ繝ｳ繧ｯ縺ｮ譛牙柑譛滄剞縺悟・繧後※縺・∪縺吶・);
+    setFlash(req, 'error', 'リセットリンクの有効期限が切れています。');
     return res.redirect('/password/reset');
   }
   return res.render('password_reset_update', {
@@ -710,17 +710,17 @@ app.get('/password/reset/:token', async (req, res) => {
 app.post('/password/reset/:token', async (req, res) => {
   const record = await getPasswordResetToken(req.params.token);
   if (!record) {
-    setFlash(req, 'error', '繝ｪ繧ｻ繝・ヨ繝ｪ繝ｳ繧ｯ縺檎┌蜉ｹ縺ｧ縺吶ょ・蠎ｦ謇狗ｶ壹″繧定｡後▲縺ｦ縺上□縺輔＞縲・);
+    setFlash(req, 'error', 'リセットリンクが無効です。再度手続きを行ってください。');
     return res.redirect('/password/reset');
   }
   if (Date.parse(record.expires_at) <= Date.now()) {
-    setFlash(req, 'error', '繝ｪ繧ｻ繝・ヨ繝ｪ繝ｳ繧ｯ縺ｮ譛牙柑譛滄剞縺悟・繧後※縺・∪縺吶・);
+    setFlash(req, 'error', 'リセットリンクの有効期限が切れています。');
     return res.redirect('/password/reset');
   }
 
   const user = await getUserById(record.user_id);
   if (!user) {
-    setFlash(req, 'error', '繝ｦ繝ｼ繧ｶ繝ｼ縺悟ｭ伜惠縺励∪縺帙ｓ縲・);
+    setFlash(req, 'error', 'ユーザーが存在しません。');
     return res.redirect('/password/reset');
   }
 
@@ -736,7 +736,7 @@ app.post('/password/reset/:token', async (req, res) => {
   await resetLoginFailures(user.id);
   await consumePasswordResetToken(record.id);
 
-  setFlash(req, 'success', '繝代せ繝ｯ繝ｼ繝峨ｒ蜀崎ｨｭ螳壹＠縺ｾ縺励◆縲ゅΟ繧ｰ繧､繝ｳ縺励※縺上□縺輔＞縲・);
+  setFlash(req, 'success', 'パスワードを再設定しました。ログインしてください。');
   return res.redirect('/login');
 });
 
@@ -754,13 +754,13 @@ app.post(
     const { currentPassword, newPassword } = req.body;
     const user = await getUserById(req.session.user.id);
     if (!user) {
-      setFlash(req, 'error', '繝ｦ繝ｼ繧ｶ繝ｼ縺瑚ｦ九▽縺九ｊ縺ｾ縺帙ｓ縲・);
+      setFlash(req, 'error', 'ユーザーが見つかりません。');
       return res.redirect('/password/change');
     }
 
     const ok = await comparePassword(currentPassword || '', user.password_hash);
     if (!ok) {
-      setFlash(req, 'error', '迴ｾ蝨ｨ縺ｮ繝代せ繝ｯ繝ｼ繝峨′豁｣縺励￥縺ゅｊ縺ｾ縺帙ｓ縲・);
+      setFlash(req, 'error', '現在のパスワードが正しくありません。');
       return res.redirect('/password/change');
     }
 
@@ -776,7 +776,7 @@ app.post(
     if (req.session.user) {
       delete req.session.user.mustChangePassword;
     }
-    setFlash(req, 'success', '繝代せ繝ｯ繝ｼ繝峨ｒ螟画峩縺励∪縺励◆縲・);
+    setFlash(req, 'success', 'パスワードを変更しました。');
     return res.redirect('/');
   }
 );
@@ -799,9 +799,9 @@ app.get('/employee', requireRole(ROLES.EMPLOYEE), async (req, res) => {
       return {
         id: session.id,
         startFormatted: formatDateTime(session.start_time),
-        endFormatted: session.end_time ? formatDateTime(session.end_time) : '險倬鹸荳ｭ',
+        endFormatted: session.end_time ? formatDateTime(session.end_time) : '記録中',
         minutes: durationMinutes,
-        formattedMinutes: durationMinutes !== null ? formatMinutesToHM(durationMinutes) : '窶・,
+        formattedMinutes: durationMinutes !== null ? formatMinutesToHM(durationMinutes) : '--',
       };
     });
 
@@ -824,10 +824,10 @@ app.post('/employee/record', requireRole(ROLES.EMPLOYEE), async (req, res) => {
   const nowIso = new Date().toISOString();
   if (openSession) {
     await closeWorkSession(openSession.id, nowIso);
-    setFlash(req, 'success', '蜍､蜍咏ｵゆｺ・ｒ險倬鹸縺励∪縺励◆縲・);
+    setFlash(req, 'success', '勤務終了を記録しました。');
   } else {
     await createWorkSession(userId, nowIso);
-    setFlash(req, 'success', '蜍､蜍咎幕蟋九ｒ險倬鹸縺励∪縺励◆縲・);
+    setFlash(req, 'success', '勤務開始を記録しました。');
   }
   return res.redirect('/employee');
 });
@@ -913,7 +913,7 @@ app.post(
     const expiresAt = expiresInput ? parseDateTimeInput(expiresInput) : null;
 
     if (expiresAt && Date.parse(expiresAt) <= Date.now()) {
-      setFlash(req, 'error', '譛牙柑譛滄剞縺ｯ迴ｾ蝨ｨ繧医ｊ蠕後・譌･譎ゅｒ謖・ｮ壹＠縺ｦ縺上□縺輔＞縲・);
+      setFlash(req, 'error', '有効期限は現在より後の日時を指定してください。');
       return res.redirect('/admin/role-codes');
     }
 
@@ -921,7 +921,7 @@ app.post(
     if (maxUsesInput) {
       const parsed = Number.parseInt(maxUsesInput, 10);
       if (Number.isNaN(parsed) || parsed <= 0) {
-        setFlash(req, 'error', '菴ｿ逕ｨ蝗樊焚荳企剞縺ｯ1莉･荳翫・謨ｴ謨ｰ縺ｧ謖・ｮ壹＠縺ｦ縺上□縺輔＞縲・);
+        setFlash(req, 'error', '使用回数上限は1以上の整数で指定してください。');
         return res.redirect('/admin/role-codes');
       }
       maxUses = parsed;
@@ -952,7 +952,7 @@ app.post(
       maxUses,
     };
 
-    setFlash(req, 'success', '繝ｭ繝ｼ繝ｫ繧ｳ繝ｼ繝峨ｒ逋ｺ陦後＠縺ｾ縺励◆縲・);
+    setFlash(req, 'success', 'ロールコードを発行しました。');
     return res.redirect('/admin/role-codes');
   }
 );
@@ -966,11 +966,11 @@ app.post(
     const codeId = Number.parseInt(req.params.codeId, 10);
     const roleCode = Number.isNaN(codeId) ? null : await getRoleCodeById(codeId);
     if (!roleCode || roleCode.tenant_id !== tenantId) {
-      setFlash(req, 'error', '繝ｭ繝ｼ繝ｫ繧ｳ繝ｼ繝峨′隕九▽縺九ｊ縺ｾ縺帙ｓ縲・);
+      setFlash(req, 'error', 'ロールコードが見つかりません。');
       return res.redirect('/admin/role-codes');
     }
     await disableRoleCode(roleCode.id);
-    setFlash(req, 'success', '繝ｭ繝ｼ繝ｫ繧ｳ繝ｼ繝峨ｒ辟｡蜉ｹ蛹悶＠縺ｾ縺励◆縲・);
+    setFlash(req, 'success', 'ロールコードを無効化しました。');
     return res.redirect('/admin/role-codes');
   }
 );
@@ -1009,7 +1009,7 @@ app.get(
         startInput: formatForDateTimeInput(session.start_time),
         endInput: session.end_time ? formatForDateTimeInput(session.end_time) : '',
         startDisplay: formatDateTime(session.start_time),
-        endDisplay: session.end_time ? formatDateTime(session.end_time) : '險倬鹸荳ｭ',
+        endDisplay: session.end_time ? formatDateTime(session.end_time) : '記録中',
         formattedMinutes: durationMinutes !== null ? formatMinutesToHM(durationMinutes) : '--',
       };
     });
@@ -1043,13 +1043,13 @@ app.post(
     const endIso = parseDateTimeInput(endInput);
 
     if (!startIso || !endIso) {
-      setFlash(req, 'error', '髢句ｧ九→邨ゆｺ・・譌･譎ゅｒ豁｣縺励￥蜈･蜉帙＠縺ｦ縺上□縺輔＞縲・);
+      setFlash(req, 'error', '開始と終了の日時を正しく入力してください。');
       res.redirect(buildAdminSessionsUrl(employee.id, req.query));
       return;
     }
 
     if (diffMinutes(startIso, endIso) <= 0) {
-      setFlash(req, 'error', '邨ゆｺ・凾蛻ｻ縺ｯ髢句ｧ区凾蛻ｻ繧医ｊ蠕後↓險ｭ螳壹＠縺ｦ縺上□縺輔＞縲・);
+      setFlash(req, 'error', '終了時刻は開始時刻より後に設定してください。');
       res.redirect(buildAdminSessionsUrl(employee.id, req.query));
       return;
     }
@@ -1061,7 +1061,7 @@ app.post(
     }
 
     await createWorkSessionWithEnd(employee.id, startIso, endIso);
-    setFlash(req, 'success', '蜍､蜍呵ｨ倬鹸繧定ｿｽ蜉縺励∪縺励◆縲・);
+    setFlash(req, 'success', '勤務記録を追加しました。');
     res.redirect(buildAdminSessionsUrl(employee.id, req.query));
   }
 );
@@ -1079,7 +1079,7 @@ app.post(
     const sessionId = Number.parseInt(req.params.sessionId, 10);
     const sessionRecord = Number.isNaN(sessionId) ? null : await getWorkSessionById(sessionId);
     if (!sessionRecord || sessionRecord.user_id !== employee.id) {
-      setFlash(req, 'error', '隧ｲ蠖薙☆繧句共蜍呵ｨ倬鹸縺瑚ｦ九▽縺九ｊ縺ｾ縺帙ｓ縲・);
+      setFlash(req, 'error', '該当する勤務記録が見つかりません。');
       res.redirect(buildAdminSessionsUrl(employee.id, req.query));
       return;
     }
@@ -1089,7 +1089,7 @@ app.post(
     const startIso = parseDateTimeInput(startInput);
 
     if (!startIso) {
-      setFlash(req, 'error', '髢句ｧ区凾蛻ｻ繧呈ｭ｣縺励￥蜈･蜉帙＠縺ｦ縺上□縺輔＞縲・);
+      setFlash(req, 'error', '開始時刻を正しく入力してください。');
       res.redirect(buildAdminSessionsUrl(employee.id, req.query));
       return;
     }
@@ -1098,12 +1098,12 @@ app.post(
     if (endInput) {
       endIso = parseDateTimeInput(endInput);
       if (!endIso) {
-        setFlash(req, 'error', '邨ゆｺ・凾蛻ｻ繧呈ｭ｣縺励￥蜈･蜉帙＠縺ｦ縺上□縺輔＞縲・);
+        setFlash(req, 'error', '終了時刻を正しく入力してください。');
         res.redirect(buildAdminSessionsUrl(employee.id, req.query));
         return;
       }
       if (diffMinutes(startIso, endIso) <= 0) {
-        setFlash(req, 'error', '邨ゆｺ・凾蛻ｻ縺ｯ髢句ｧ区凾蛻ｻ繧医ｊ蠕後↓險ｭ螳壹＠縺ｦ縺上□縺輔＞縲・);
+        setFlash(req, 'error', '終了時刻は開始時刻より後に設定してください。');
         res.redirect(buildAdminSessionsUrl(employee.id, req.query));
         return;
       }
@@ -1116,7 +1116,7 @@ app.post(
     }
 
     await updateWorkSessionTimes(sessionRecord.id, startIso, endIso);
-    setFlash(req, 'success', '蜍､蜍呵ｨ倬鹸繧呈峩譁ｰ縺励∪縺励◆縲・);
+    setFlash(req, 'success', '勤務記録を更新しました。');
     res.redirect(buildAdminSessionsUrl(employee.id, req.query));
   }
 );
@@ -1134,13 +1134,13 @@ app.post(
     const sessionId = Number.parseInt(req.params.sessionId, 10);
     const sessionRecord = Number.isNaN(sessionId) ? null : await getWorkSessionById(sessionId);
     if (!sessionRecord || sessionRecord.user_id !== employee.id) {
-      setFlash(req, 'error', '隧ｲ蠖薙☆繧句共蜍呵ｨ倬鹸縺瑚ｦ九▽縺九ｊ縺ｾ縺帙ｓ縲・);
+      setFlash(req, 'error', '該当する勤務記録が見つかりません。');
       res.redirect(buildAdminSessionsUrl(employee.id, req.query));
       return;
     }
 
     await deleteWorkSession(sessionRecord.id);
-    setFlash(req, 'success', '蜍､蜍呵ｨ倬鹸繧貞炎髯､縺励∪縺励◆縲・);
+    setFlash(req, 'success', '勤務記録を削除しました。');
     res.redirect(buildAdminSessionsUrl(employee.id, req.query));
   }
 );
@@ -1152,7 +1152,7 @@ app.get(
   async (req, res) => {
     const { userId, year, month } = req.query;
     if (!userId) {
-      setFlash(req, 'error', '蠕捺･ｭ蜩｡繧帝∈謚槭＠縺ｦ縺上□縺輔＞縲・);
+      setFlash(req, 'error', '従業員を選択してください。');
       return res.redirect('/admin');
     }
     const employee = await getUserById(Number(userId));
@@ -1161,7 +1161,7 @@ app.get(
       employee.role !== ROLES.EMPLOYEE ||
       employee.tenant_id !== req.session.user.tenantId
     ) {
-      setFlash(req, 'error', '蟇ｾ雎｡縺ｮ蠕捺･ｭ蜩｡縺瑚ｦ九▽縺九ｊ縺ｾ縺帙ｓ縲・);
+      setFlash(req, 'error', '対象の従業員が見つかりません。');
       return res.redirect('/admin');
     }
     const now = toZonedDateTime(new Date().toISOString());
@@ -1174,18 +1174,18 @@ app.get(
 
     const workbook = await XlsxPopulate.fromBlankAsync();
     const sheet = workbook.sheet(0);
-    sheet.name('蜍､蜍呵ｨ倬鹸');
+    sheet.name('勤務記録');
 
-    sheet.cell('A1').value('蠕捺･ｭ蜩｡');
+    sheet.cell('A1').value('従業員');
     sheet.cell('B1').value(employee.username);
-    sheet.cell('A2').value('蟇ｾ雎｡譛・);
-    sheet.cell('B2').value(`${targetYear}蟷ｴ${String(targetMonth).padStart(2, '0')}譛・);
-    sheet.cell('A4').value('譌･莉・);
-    sheet.cell('B4').value('蜍､蜍咎幕蟋・);
-    sheet.cell('C4').value('蜍､蜍咏ｵゆｺ・);
-    sheet.cell('D4').value('蜍､蜍呎凾髢・蛻・');
-    sheet.cell('E4').value('蜍､蜍呎凾髢・譎・蛻・');
-
+    sheet.cell('A2').value('対象月');
+    sheet.cell('A2').value('対象月');
+    sheet.cell('B2').value(`${targetYear}年${String(targetMonth).padStart(2, '0')}月`);
+    sheet.cell('A4').value('日付');
+    sheet.cell('B4').value('勤務開始');
+    sheet.cell('C4').value('勤務終了');
+    sheet.cell('D4').value('勤務時間（分）');
+    sheet.cell('E4').value('勤務時間（hh:mm）');
     let row = 5;
     detailed.days.forEach((day) => {
       day.sessions.forEach((session) => {
@@ -1203,8 +1203,8 @@ app.get(
       }
     });
 
-    sheet.cell(`D${row + 1}`).value('蜷郁ｨ・蛻・');
-    sheet.cell(`E${row + 1}`).value('蜷郁ｨ・譎・蛻・');
+    sheet.cell(`D${row + 1}`).value('合計（分）');
+    sheet.cell(`E${row + 1}`).value('合計（hh:mm）');
     sheet.cell(`D${row + 2}`).value(detailed.totalMinutes);
     sheet.cell(`E${row + 2}`).value(detailed.formattedTotal);
 
@@ -1235,34 +1235,34 @@ app.get('/platform/tenants', requireRole(ROLES.PLATFORM), async (req, res) => {
 });
 
 app.post('/platform/tenants', requireRole(ROLES.PLATFORM), async (req, res) => {
-  const tenantNameResult = validateNameField('繝・リ繝ｳ繝亥錐', req.body.tenantName || '蜷咲ｧｰ譛ｪ險ｭ螳・);
+  const tenantNameResult = validateNameField('テナント名', req.body.tenantName || '名称未設定');
   if (!tenantNameResult.valid) {
     setFlash(req, 'error', tenantNameResult.message);
     return res.redirect('/platform/tenants');
   }
   const contactEmail = normalizeEmail(req.body.contactEmail);
   if (!contactEmail) {
-    setFlash(req, 'error', '繝・リ繝ｳ繝磯｣邨｡蜈医Γ繝ｼ繝ｫ繧｢繝峨Ξ繧ｹ繧貞・蜉帙＠縺ｦ縺上□縺輔＞縲・);
+    setFlash(req, 'error', 'テナント連絡先メールアドレスを入力してください。');
     return res.redirect('/platform/tenants');
   }
-  const adminFirstNameResult = validateNameField('邂｡逅・・錐・亥錐・・, req.body.adminFirstName);
+  const adminFirstNameResult = validateNameField('管理者（名）', req.body.adminFirstName);
   if (!adminFirstNameResult.valid) {
     setFlash(req, 'error', adminFirstNameResult.message);
     return res.redirect('/platform/tenants');
   }
-  const adminLastNameResult = validateNameField('邂｡逅・・錐・亥ｧ難ｼ・, req.body.adminLastName);
+  const adminLastNameResult = validateNameField('管理者（姓）', req.body.adminLastName);
   if (!adminLastNameResult.valid) {
     setFlash(req, 'error', adminLastNameResult.message);
     return res.redirect('/platform/tenants');
   }
   const adminEmail = normalizeEmail(req.body.adminEmail);
   if (!adminEmail) {
-    setFlash(req, 'error', '邂｡逅・・・繝｡繝ｼ繝ｫ繧｢繝峨Ξ繧ｹ繧貞・蜉帙＠縺ｦ縺上□縺輔＞縲・);
+    setFlash(req, 'error', '管理者メールアドレスを入力してください。');
     return res.redirect('/platform/tenants');
   }
   const existingTenantAdmin = await getUserByEmail(adminEmail);
   if (existingTenantAdmin) {
-    setFlash(req, 'error', '謖・ｮ壹＆繧後◆邂｡逅・・Γ繝ｼ繝ｫ繧｢繝峨Ξ繧ｹ縺ｯ譌｢縺ｫ菴ｿ逕ｨ縺輔ｌ縺ｦ縺・∪縺吶・);
+    setFlash(req, 'error', '指定された管理者メールアドレスは既に使用されています。');
     return res.redirect('/platform/tenants');
   }
 
@@ -1289,8 +1289,8 @@ app.post('/platform/tenants', requireRole(ROLES.PLATFORM), async (req, res) => {
       lastName: adminLastNameResult.value,
     });
   } catch (error) {
-    console.error('[platform] 繝・リ繝ｳ繝育ｮ｡逅・・ｽ懈・縺ｫ螟ｱ謨励＠縺ｾ縺励◆', error);
-    setFlash(req, 'error', '繝・リ繝ｳ繝育ｮ｡逅・・・菴懈・縺ｫ螟ｱ謨励＠縺ｾ縺励◆縲・);
+    console.error('[platform] テナント管理者アカウント作成に失敗しました', error);
+    setFlash(req, 'error', 'テナント管理者アカウントの作成に失敗しました。');
     return res.redirect('/platform/tenants');
   }
 
@@ -1300,7 +1300,7 @@ app.post('/platform/tenants', requireRole(ROLES.PLATFORM), async (req, res) => {
     initialPassword,
   };
 
-  setFlash(req, 'success', '繝・リ繝ｳ繝医→邂｡逅・・い繧ｫ繧ｦ繝ｳ繝医ｒ菴懈・縺励∪縺励◆縲・);
+  setFlash(req, 'success', 'テナントと管理者アカウントを作成しました。');
   return res.redirect('/platform/tenants');
 });
 
@@ -1311,7 +1311,7 @@ app.use((err, req, res, next) => {
   // eslint-disable-next-line no-console
   console.warn('[csrf] Invalid CSRF token detected', { path: req.path });
   if (req.session) {
-    setFlash(req, 'error', '繧ｻ繧ｭ繝･繝ｪ繝・ぅ繝√ぉ繝・け縺ｫ螟ｱ謨励＠縺ｾ縺励◆縲ゅｂ縺・ｸ蠎ｦ謫堺ｽ懊ｒ繧・ｊ逶ｴ縺励※縺上□縺輔＞縲・);
+    setFlash(req, 'error', 'セキュリティチェックに失敗しました。もう一度操作をやり直してください。');
     const fallbackRedirect = req.get('referer') || '/';
     return res.redirect(fallbackRedirect);
   }
@@ -1319,5 +1319,3 @@ app.use((err, req, res, next) => {
 });
 
 module.exports = app;
-
-
