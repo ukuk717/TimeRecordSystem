@@ -1,14 +1,12 @@
-const express = require('express');
-const fs = require('fs');
+﻿const express = require('express');
 const path = require('path');
 const crypto = require('crypto');
 const session = require('express-session');
 const Tokens = require('csrf');
-const SQLiteStore = require('better-sqlite3-session-store')(session);
 const XlsxPopulate = require('xlsx-populate');
 
 const {
-  db,
+  getSqlClient,
   createTenant,
   getTenantById,
   getTenantByUid,
@@ -64,6 +62,7 @@ const {
 } = require('./utils/time');
 
 const app = express();
+app.set('trust proxy', 1);
 const isTestEnv = process.env.NODE_ENV === 'test';
 const tokens = new Tokens({ saltLength: 16, secretLength: 32 });
 
@@ -101,7 +100,7 @@ const allowedHostnames = (() => {
 })();
 
 const OVERLAP_ERROR_MESSAGE =
-  '他の勤怠記録と時間が重複しています。修正対象の時間帯を見直してください。';
+  '莉悶・蜍､諤險倬鹸縺ｨ譎る俣縺碁㍾隍・＠縺ｦ縺・∪縺吶ゆｿｮ豁｣蟇ｾ雎｡縺ｮ譎る俣蟶ｯ繧定ｦ狗峩縺励※縺上□縺輔＞縲・;
 const LOGIN_FAILURE_LIMIT = 5;
 const LOGIN_LOCK_MINUTES = 15;
 const ROLE_CODE_LENGTH = 16;
@@ -112,76 +111,108 @@ const ROLES = {
   EMPLOYEE: 'employee',
 };
 
-const sessionStoreOptions = {
-  client: db,
-};
+const DEFAULT_SESSION_TTL_SECONDS = 60 * 60 * 12;
 
-if (!isTestEnv) {
-  sessionStoreOptions.expired = {
-    clear: true,
-    intervalMs: 10 * 60 * 1000,
-  };
+function parsePositiveInt(value, fallback) {
+  const parsed = Number.parseInt(value, 10);
+  if (Number.isFinite(parsed) && parsed > 0) {
+    return parsed;
+  }
+  return fallback;
 }
 
-const SESSION_SECRET_PATH = path.join(__dirname, '..', 'data', 'session-secret.txt');
+function parseBoolean(value, fallback = false) {
+  if (value === undefined || value === null) {
+    return fallback;
+  }
+  const normalized = String(value).trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) {
+    return true;
+  }
+  if (['0', 'false', 'no', 'off'].includes(normalized)) {
+    return false;
+  }
+  return fallback;
+}
+
+const configuredSessionTtlSeconds = parsePositiveInt(
+  process.env.SESSION_TTL_SECONDS,
+  DEFAULT_SESSION_TTL_SECONDS
+);
 
 function loadSessionSecret() {
-  const envSecret = process.env.SESSION_SECRET;
-  if (envSecret && envSecret.trim()) {
-    return envSecret.trim();
-  }
-
-  const secretDir = path.dirname(SESSION_SECRET_PATH);
-  try {
-    fs.mkdirSync(secretDir, { recursive: true });
-  } catch (error) {
-    if (!isTestEnv) {
-      // eslint-disable-next-line no-console
-      console.warn('[session] Failed to ensure session secret directory exists.', error);
-    }
-  }
-
-  try {
-    const fileSecret = fs.readFileSync(SESSION_SECRET_PATH, 'utf8').trim();
-    if (fileSecret) {
-      if (!isTestEnv) {
-        // eslint-disable-next-line no-console
-        console.info(`[session] Loaded session secret from ${SESSION_SECRET_PATH}.`);
-      }
-      return fileSecret;
-    }
-  } catch (error) {
-    if (error.code !== 'ENOENT' && !isTestEnv) {
-      // eslint-disable-next-line no-console
-      console.warn('[session] Failed to read session secret file.', error);
-    }
-  }
-
-  const generatedSecret = crypto.randomBytes(32).toString('hex');
-  try {
-    fs.writeFileSync(SESSION_SECRET_PATH, `${generatedSecret}\n`, {
-      encoding: 'utf8',
-      mode: 0o600,
-    });
-    if (!isTestEnv) {
-      // eslint-disable-next-line no-console
-      console.info(`[session] Generated new session secret at ${SESSION_SECRET_PATH}.`);
-    }
-  } catch (error) {
-    if (!isTestEnv) {
-      // eslint-disable-next-line no-console
-      console.warn('[session] Failed to persist session secret to disk.', error);
-    }
+  const envSecret = (process.env.SESSION_SECRET || '').trim();
+  if (envSecret) {
+    return envSecret;
   }
   if (!isTestEnv) {
     // eslint-disable-next-line no-console
-    console.warn('[session] SESSION_SECRET is not set; using generated secret stored on disk.');
+    console.warn('[session] SESSION_SECRET is not set; generating ephemeral runtime secret.');
   }
-  return generatedSecret;
+  return crypto.randomBytes(32).toString('hex');
+}
+
+function createSessionStore(secret) {
+  const driver = (process.env.SESSION_STORE_DRIVER || 'knex').toLowerCase();
+  if (driver === 'memory' || driver === 'in-memory') {
+    if (!isTestEnv) {
+      // eslint-disable-next-line no-console
+      console.warn('[session] Using MemoryStore. Sessions will be lost when the Lambda container is recycled.');
+    }
+    return new session.MemoryStore();
+  }
+
+  if (driver === 'dynamodb') {
+    // Lazy-require to avoid unnecessary dependency cost when譛ｪ菴ｿ逕ｨ.
+    // eslint-disable-next-line global-require
+    const DynamoDBStore = require('connect-dynamodb')({ session });
+    const tablePrefix = process.env.DYNAMODB_TABLE_PREFIX || 'timerecord';
+    const tableName = process.env.DYNAMODB_SESSION_TABLE || `${tablePrefix}-sessions`;
+    const opts = {
+      table: tableName,
+      crypto: { secret },
+      ttl: configuredSessionTtlSeconds,
+      AWSConfigJSON: {},
+    };
+    if (process.env.AWS_REGION) {
+      opts.AWSConfigJSON.region = process.env.AWS_REGION;
+    }
+    if (process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY) {
+      opts.AWSConfigJSON.accessKeyId = process.env.AWS_ACCESS_KEY_ID;
+      opts.AWSConfigJSON.secretAccessKey = process.env.AWS_SECRET_ACCESS_KEY;
+    }
+    if (process.env.DYNAMODB_ENDPOINT) {
+      opts.AWSConfigJSON.endpoint = process.env.DYNAMODB_ENDPOINT;
+    }
+    const readCapacity = parsePositiveInt(process.env.DYNAMODB_SESSION_READ_CAPACITY, null);
+    const writeCapacity = parsePositiveInt(process.env.DYNAMODB_SESSION_WRITE_CAPACITY, null);
+    if (readCapacity) {
+      opts.readCapacityUnits = readCapacity;
+    }
+    if (writeCapacity) {
+      opts.writeCapacityUnits = writeCapacity;
+    }
+    return new DynamoDBStore(opts);
+  }
+
+  // Default: RDS/SQL backed store
+  // eslint-disable-next-line global-require
+  const KnexSessionStore = require('connect-session-knex')(session);
+  const clearIntervalMs = parsePositiveInt(
+    process.env.SESSION_PRUNE_INTERVAL_MS,
+    10 * 60 * 1000
+  );
+  return new KnexSessionStore({
+    knex: getSqlClient(),
+    tablename: process.env.SESSION_TABLE_NAME || 'sessions',
+    createtable: true,
+    clearInterval: clearIntervalMs,
+    ttl: configuredSessionTtlSeconds * 1000,
+  });
 }
 
 const sessionSecret = loadSessionSecret();
-const sessionStore = new SQLiteStore(sessionStoreOptions);
+const sessionStore = createSessionStore(sessionSecret);
 
 app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, '..', 'views'));
@@ -251,10 +282,10 @@ app.use(
     resave: false,
     saveUninitialized: false,
     cookie: {
-      maxAge: 1000 * 60 * 60 * 12,
+      maxAge: configuredSessionTtlSeconds * 1000,
       httpOnly: true,
       sameSite: 'lax',
-      secure: process.env.NODE_ENV === 'production',
+      secure: parseBoolean(process.env.SESSION_COOKIE_SECURE, process.env.NODE_ENV === 'production'),
     },
   })
 );
@@ -288,7 +319,7 @@ app.use((req, res, next) => {
   if (req.method !== 'GET') {
     return res.redirect('/password/change');
   }
-  setFlash(req, 'info', '初回ログインのためパスワードを変更してください。');
+  setFlash(req, 'info', '蛻晏屓繝ｭ繧ｰ繧､繝ｳ縺ｮ縺溘ａ繝代せ繝ｯ繝ｼ繝峨ｒ螟画峩縺励※縺上□縺輔＞縲・);
   return res.redirect('/password/change');
 });
 
@@ -300,11 +331,13 @@ function normalizeEmail(email) {
   return (email || '').trim().toLowerCase();
 }
 
-function generateTenantUid() {
+async function generateTenantUid() {
   let attempt = 0;
   while (attempt < 10) {
     const candidate = `ten_${crypto.randomBytes(6).toString('hex')}`;
-    if (!getTenantByUid(candidate)) {
+    // eslint-disable-next-line no-await-in-loop
+    const existing = await getTenantByUid(candidate);
+    if (!existing) {
       return candidate;
     }
     attempt += 1;
@@ -338,8 +371,8 @@ function formatDisplayDateTime(isoString) {
   return fallback.toLocaleString('ja-JP');
 }
 
-function hasOverlappingSessions(userId, startIso, endIso, excludeSessionId = null) {
-  const sessions = getAllWorkSessionsByUser(userId);
+async function hasOverlappingSessions(userId, startIso, endIso, excludeSessionId = null) {
+  const sessions = await getAllWorkSessionsByUser(userId);
   const targetStart = Date.parse(startIso);
   const targetEnd = endIso ? Date.parse(endIso) : Number.POSITIVE_INFINITY;
 
@@ -356,11 +389,11 @@ function hasOverlappingSessions(userId, startIso, endIso, excludeSessionId = nul
 function requireRole(...roles) {
   return (req, res, next) => {
     if (!req.session.user) {
-      setFlash(req, 'error', 'ログインしてください。');
+      setFlash(req, 'error', '繝ｭ繧ｰ繧､繝ｳ縺励※縺上□縺輔＞縲・);
       return res.redirect('/login');
     }
     if (!roles.includes(req.session.user.role)) {
-      setFlash(req, 'error', '権限がありません。');
+      setFlash(req, 'error', '讓ｩ髯舌′縺ゅｊ縺ｾ縺帙ｓ縲・);
       return res.redirect('/');
     }
     return next();
@@ -369,7 +402,7 @@ function requireRole(...roles) {
 
 function ensureTenantContext(req, res, next) {
   if (!req.session.user || !req.session.user.tenantId) {
-    setFlash(req, 'error', 'テナント情報が存在しません。');
+    setFlash(req, 'error', '繝・リ繝ｳ繝域ュ蝣ｱ縺悟ｭ伜惠縺励∪縺帙ｓ縲・);
     return res.redirect('/');
   }
   return next();
@@ -389,16 +422,16 @@ function buildSessionQuery(query = {}) {
 const buildAdminSessionsUrl = (userId, query = {}) =>
   `/admin/employees/${userId}/sessions${buildSessionQuery(query)}`;
 
-function getEmployeeForTenantAdmin(req, res) {
+async function getEmployeeForTenantAdmin(req, res) {
   const employeeId = Number.parseInt(req.params.userId, 10);
-  const employee = Number.isNaN(employeeId) ? null : getUserById(employeeId);
+  const employee = Number.isNaN(employeeId) ? null : await getUserById(employeeId);
   if (!employee || employee.role !== ROLES.EMPLOYEE) {
-    setFlash(req, 'error', '従業員が見つかりません。');
+    setFlash(req, 'error', '蠕捺･ｭ蜩｡縺瑚ｦ九▽縺九ｊ縺ｾ縺帙ｓ縲・);
     res.redirect('/admin');
     return null;
   }
   if (employee.tenant_id !== req.session.user.tenantId) {
-    setFlash(req, 'error', '他テナントの従業員にはアクセスできません。');
+    setFlash(req, 'error', '莉悶ユ繝翫Φ繝医・蠕捺･ｭ蜩｡縺ｫ縺ｯ繧｢繧ｯ繧ｻ繧ｹ縺ｧ縺阪∪縺帙ｓ縲・);
     res.redirect('/admin');
     return null;
   }
@@ -408,15 +441,15 @@ function getEmployeeForTenantAdmin(req, res) {
 function validateNameField(label, value) {
   const trimmed = (value || '').trim();
   if (!trimmed) {
-    return { valid: false, message: `${label}を入力してください。` };
+    return { valid: false, message: `${label}繧貞・蜉帙＠縺ｦ縺上□縺輔＞縲Ａ };
   }
   if (trimmed.length > 64) {
-    return { valid: false, message: `${label}は64文字以内で入力してください。` };
+    return { valid: false, message: `${label}縺ｯ64譁・ｭ嶺ｻ･蜀・〒蜈･蜉帙＠縺ｦ縺上□縺輔＞縲Ａ };
   }
   for (let i = 0; i < trimmed.length; i += 1) {
     const code = trimmed.charCodeAt(i);
     if (code < 0x20 || code === 0x7f) {
-      return { valid: false, message: `${label}に制御文字は使用できません。` };
+      return { valid: false, message: `${label}縺ｫ蛻ｶ蠕｡譁・ｭ励・菴ｿ逕ｨ縺ｧ縺阪∪縺帙ｓ縲Ａ };
     }
   }
   return { valid: true, value: trimmed };
@@ -454,13 +487,13 @@ app.post('/login', async (req, res) => {
   const password = (req.body.password || '').trim();
 
   if (!email || !password) {
-    setFlash(req, 'error', 'メールアドレスとパスワードを入力してください。');
+    setFlash(req, 'error', '繝｡繝ｼ繝ｫ繧｢繝峨Ξ繧ｹ縺ｨ繝代せ繝ｯ繝ｼ繝峨ｒ蜈･蜉帙＠縺ｦ縺上□縺輔＞縲・);
     return res.redirect('/login');
   }
 
-  const user = getUserByEmail(email);
+  const user = await getUserByEmail(email);
   if (!user) {
-    setFlash(req, 'error', 'メールアドレスまたはパスワードが正しくありません。');
+    setFlash(req, 'error', '繝｡繝ｼ繝ｫ繧｢繝峨Ξ繧ｹ縺ｾ縺溘・繝代せ繝ｯ繝ｼ繝峨′豁｣縺励￥縺ゅｊ縺ｾ縺帙ｓ縲・);
     return res.redirect('/login');
   }
 
@@ -471,7 +504,7 @@ app.post('/login', async (req, res) => {
     setFlash(
       req,
       'error',
-      `アカウントがロックされています。${remainingMinutes}分後に再度お試しください。`
+      `繧｢繧ｫ繧ｦ繝ｳ繝医′繝ｭ繝・け縺輔ｌ縺ｦ縺・∪縺吶・{remainingMinutes}蛻・ｾ後↓蜀榊ｺｦ縺願ｩｦ縺励￥縺縺輔＞縲Ａ
     );
     return res.redirect('/login');
   }
@@ -482,25 +515,25 @@ app.post('/login', async (req, res) => {
     const lockUntilIso = willLock
       ? new Date(now.getTime() + LOGIN_LOCK_MINUTES * 60 * 1000).toISOString()
       : null;
-    const meta = recordLoginFailure(user.id, lockUntilIso);
+    const meta = await recordLoginFailure(user.id, lockUntilIso);
     if (willLock) {
       setFlash(
         req,
         'error',
-        `ログインに${LOGIN_FAILURE_LIMIT}回連続で失敗したため、${LOGIN_LOCK_MINUTES}分間ロックしました。`
+        `繝ｭ繧ｰ繧､繝ｳ縺ｫ${LOGIN_FAILURE_LIMIT}蝗樣｣邯壹〒螟ｱ謨励＠縺溘◆繧√・{LOGIN_LOCK_MINUTES}蛻・俣繝ｭ繝・け縺励∪縺励◆縲Ａ
       );
     } else {
       const remaining = Math.max(0, LOGIN_FAILURE_LIMIT - meta.failed_attempts);
       setFlash(
         req,
         'error',
-        `メールアドレスまたはパスワードが正しくありません。（あと${remaining}回でロック）`
+        `繝｡繝ｼ繝ｫ繧｢繝峨Ξ繧ｹ縺ｾ縺溘・繝代せ繝ｯ繝ｼ繝峨′豁｣縺励￥縺ゅｊ縺ｾ縺帙ｓ縲ゑｼ医≠縺ｨ${remaining}蝗槭〒繝ｭ繝・け・荏
       );
     }
     return res.redirect('/login');
   }
 
-  resetLoginFailures(user.id);
+  await resetLoginFailures(user.id);
   req.session.user = {
     id: user.id,
     username: user.username,
@@ -510,11 +543,11 @@ app.post('/login', async (req, res) => {
 
   if (user.must_change_password) {
     req.session.user.mustChangePassword = true;
-    setFlash(req, 'info', '初回ログインのためパスワードを変更してください。');
+    setFlash(req, 'info', '蛻晏屓繝ｭ繧ｰ繧､繝ｳ縺ｮ縺溘ａ繝代せ繝ｯ繝ｼ繝峨ｒ螟画峩縺励※縺上□縺輔＞縲・);
     return res.redirect('/password/change');
   }
 
-  setFlash(req, 'success', 'ログインしました。');
+  setFlash(req, 'success', '繝ｭ繧ｰ繧､繝ｳ縺励∪縺励◆縲・);
   return res.redirect('/');
 });
 
@@ -533,48 +566,49 @@ app.get('/register', (req, res) => {
 
 app.post('/register', async (req, res) => {
   const roleCodeValue = (req.body.roleCode || '').trim().toUpperCase();
-  const firstNameResult = validateNameField('名', req.body.firstName);
+  const firstNameResult = validateNameField('蜷・, req.body.firstName);
   if (!firstNameResult.valid) {
     setFlash(req, 'error', firstNameResult.message);
     return res.redirect('/register');
   }
-  const lastNameResult = validateNameField('姓', req.body.lastName);
+  const lastNameResult = validateNameField('蟋・, req.body.lastName);
   if (!lastNameResult.valid) {
     setFlash(req, 'error', lastNameResult.message);
     return res.redirect('/register');
   }
   const email = normalizeEmail(req.body.email);
   if (!email) {
-    setFlash(req, 'error', 'メールアドレスを入力してください。');
+    setFlash(req, 'error', '繝｡繝ｼ繝ｫ繧｢繝峨Ξ繧ｹ繧貞・蜉帙＠縺ｦ縺上□縺輔＞縲・);
     return res.redirect('/register');
   }
   const newPassword = req.body.password || '';
 
   if (!roleCodeValue) {
-    setFlash(req, 'error', 'ロールコードを入力してください。');
+    setFlash(req, 'error', '繝ｭ繝ｼ繝ｫ繧ｳ繝ｼ繝峨ｒ蜈･蜉帙＠縺ｦ縺上□縺輔＞縲・);
     return res.redirect('/register');
   }
 
-  const roleCode = getRoleCodeByCode(roleCodeValue);
+  const roleCode = await getRoleCodeByCode(roleCodeValue);
   if (!roleCode) {
-    setFlash(req, 'error', 'ロールコードが無効です。');
+    setFlash(req, 'error', '繝ｭ繝ｼ繝ｫ繧ｳ繝ｼ繝峨′辟｡蜉ｹ縺ｧ縺吶・);
     return res.redirect('/register');
   }
   if (roleCode.is_disabled) {
-    setFlash(req, 'error', 'このロールコードは無効化されています。');
+    setFlash(req, 'error', '縺薙・繝ｭ繝ｼ繝ｫ繧ｳ繝ｼ繝峨・辟｡蜉ｹ蛹悶＆繧後※縺・∪縺吶・);
     return res.redirect('/register');
   }
   if (roleCode.expires_at && Date.parse(roleCode.expires_at) <= Date.now()) {
-    setFlash(req, 'error', 'ロールコードの有効期限が切れています。');
+    setFlash(req, 'error', '繝ｭ繝ｼ繝ｫ繧ｳ繝ｼ繝峨・譛牙柑譛滄剞縺悟・繧後※縺・∪縺吶・);
     return res.redirect('/register');
   }
   if (roleCode.max_uses !== null && roleCode.usage_count >= roleCode.max_uses) {
-    setFlash(req, 'error', 'ロールコードの利用上限に達しています。');
+    setFlash(req, 'error', '繝ｭ繝ｼ繝ｫ繧ｳ繝ｼ繝峨・蛻ｩ逕ｨ荳企剞縺ｫ驕斐＠縺ｦ縺・∪縺吶・);
     return res.redirect('/register');
   }
 
-  if (getUserByEmail(email)) {
-    setFlash(req, 'error', 'このメールアドレスは既に登録されています。');
+  const existingUser = await getUserByEmail(email);
+  if (existingUser) {
+    setFlash(req, 'error', '縺薙・繝｡繝ｼ繝ｫ繧｢繝峨Ξ繧ｹ縺ｯ譌｢縺ｫ逋ｻ骭ｲ縺輔ｌ縺ｦ縺・∪縺吶・);
     return res.redirect('/register');
   }
 
@@ -584,9 +618,9 @@ app.post('/register', async (req, res) => {
     return res.redirect('/register');
   }
 
-  const tenant = getTenantById(roleCode.tenant_id);
+  const tenant = await getTenantById(roleCode.tenant_id);
   if (!tenant) {
-    setFlash(req, 'error', 'ロールコードに対応するテナントが見つかりません。');
+    setFlash(req, 'error', '繝ｭ繝ｼ繝ｫ繧ｳ繝ｼ繝峨↓蟇ｾ蠢懊☆繧九ユ繝翫Φ繝医′隕九▽縺九ｊ縺ｾ縺帙ｓ縲・);
     return res.redirect('/register');
   }
 
@@ -594,7 +628,7 @@ app.post('/register', async (req, res) => {
   const username = `${lastNameResult.value}${firstNameResult.value}`;
 
   try {
-    createUser({
+    await createUser({
       tenantId: tenant.id,
       username,
       email,
@@ -603,20 +637,20 @@ app.post('/register', async (req, res) => {
       firstName: firstNameResult.value,
       lastName: lastNameResult.value,
     });
-    incrementRoleCodeUsage(roleCode.id);
-    const updatedRoleCode = getRoleCodeById(roleCode.id);
+    await incrementRoleCodeUsage(roleCode.id);
+    const updatedRoleCode = await getRoleCodeById(roleCode.id);
     if (
       updatedRoleCode &&
       updatedRoleCode.max_uses !== null &&
       updatedRoleCode.usage_count >= updatedRoleCode.max_uses
     ) {
-      disableRoleCode(updatedRoleCode.id);
+      await disableRoleCode(updatedRoleCode.id);
     }
-    setFlash(req, 'success', 'アカウントを作成しました。ログインしてください。');
+    setFlash(req, 'success', '繧｢繧ｫ繧ｦ繝ｳ繝医ｒ菴懈・縺励∪縺励◆縲ゅΟ繧ｰ繧､繝ｳ縺励※縺上□縺輔＞縲・);
     return res.redirect('/login');
   } catch (error) {
-    console.error('[register] 従業員アカウント作成に失敗しました', error);
-    setFlash(req, 'error', 'アカウント作成中にエラーが発生しました。');
+    console.error('[register] 蠕捺･ｭ蜩｡繧｢繧ｫ繧ｦ繝ｳ繝井ｽ懈・縺ｫ螟ｱ謨励＠縺ｾ縺励◆', error);
+    setFlash(req, 'error', '繧｢繧ｫ繧ｦ繝ｳ繝井ｽ懈・荳ｭ縺ｫ繧ｨ繝ｩ繝ｼ縺檎匱逕溘＠縺ｾ縺励◆縲・);
     return res.redirect('/register');
   }
 });
@@ -625,46 +659,46 @@ app.get('/password/reset', (req, res) => {
   res.render('password_reset_request');
 });
 
-app.post('/password/reset', (req, res) => {
+app.post('/password/reset', async (req, res) => {
   const email = normalizeEmail(req.body.email);
   if (!email) {
-    setFlash(req, 'error', 'メールアドレスを入力してください。');
+    setFlash(req, 'error', '繝｡繝ｼ繝ｫ繧｢繝峨Ξ繧ｹ繧貞・蜉帙＠縺ｦ縺上□縺輔＞縲・);
     return res.redirect('/password/reset');
   }
 
-  const user = getUserByEmail(email);
+  const user = await getUserByEmail(email);
   if (!user) {
-    setFlash(req, 'info', 'パスワードリセット手順をメールアドレスへ送信しました。');
+    setFlash(req, 'info', '繝代せ繝ｯ繝ｼ繝峨Μ繧ｻ繝・ヨ謇矩・ｒ繝｡繝ｼ繝ｫ繧｢繝峨Ξ繧ｹ縺ｸ騾∽ｿ｡縺励∪縺励◆縲・);
     return res.redirect('/login');
   }
 
   const token = crypto.randomBytes(32).toString('hex');
   const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
-  createPasswordResetToken(user.id, token, expiresAt);
+  await createPasswordResetToken(user.id, token, expiresAt);
 
   const resetLink = new URL(`/password/reset/${token}`, appBaseUrl).toString();
   if (process.env.NODE_ENV !== 'production') {
-    console.info(`[password-reset] ${email} 用リセットリンク: ${resetLink}`);
+    console.info(`[password-reset] ${email} 逕ｨ繝ｪ繧ｻ繝・ヨ繝ｪ繝ｳ繧ｯ: ${resetLink}`);
   } else {
-    console.info(`[password-reset] ${email} へのリセット手続きを記録しました`);
+    console.info(`[password-reset] ${email} 縺ｸ縺ｮ繝ｪ繧ｻ繝・ヨ謇狗ｶ壹″繧定ｨ倬鹸縺励∪縺励◆`);
   }
 
   setFlash(
     req,
     'info',
-    'パスワードリセット用のリンクをメールアドレスへ送信しました。（試作環境ではサーバーログを確認してください）'
+    '繝代せ繝ｯ繝ｼ繝峨Μ繧ｻ繝・ヨ逕ｨ縺ｮ繝ｪ繝ｳ繧ｯ繧偵Γ繝ｼ繝ｫ繧｢繝峨Ξ繧ｹ縺ｸ騾∽ｿ｡縺励∪縺励◆縲ゑｼ郁ｩｦ菴懃腸蠅・〒縺ｯ繧ｵ繝ｼ繝舌・繝ｭ繧ｰ繧堤｢ｺ隱阪＠縺ｦ縺上□縺輔＞・・
   );
   return res.redirect('/login');
 });
 
-app.get('/password/reset/:token', (req, res) => {
-  const record = getPasswordResetToken(req.params.token);
+app.get('/password/reset/:token', async (req, res) => {
+  const record = await getPasswordResetToken(req.params.token);
   if (!record) {
-    setFlash(req, 'error', 'リセットリンクが無効です。再度手続きを行ってください。');
+    setFlash(req, 'error', '繝ｪ繧ｻ繝・ヨ繝ｪ繝ｳ繧ｯ縺檎┌蜉ｹ縺ｧ縺吶ょ・蠎ｦ謇狗ｶ壹″繧定｡後▲縺ｦ縺上□縺輔＞縲・);
     return res.redirect('/password/reset');
   }
   if (Date.parse(record.expires_at) <= Date.now()) {
-    setFlash(req, 'error', 'リセットリンクの有効期限が切れています。');
+    setFlash(req, 'error', '繝ｪ繧ｻ繝・ヨ繝ｪ繝ｳ繧ｯ縺ｮ譛牙柑譛滄剞縺悟・繧後※縺・∪縺吶・);
     return res.redirect('/password/reset');
   }
   return res.render('password_reset_update', {
@@ -674,19 +708,19 @@ app.get('/password/reset/:token', (req, res) => {
 });
 
 app.post('/password/reset/:token', async (req, res) => {
-  const record = getPasswordResetToken(req.params.token);
+  const record = await getPasswordResetToken(req.params.token);
   if (!record) {
-    setFlash(req, 'error', 'リセットリンクが無効です。再度手続きを行ってください。');
+    setFlash(req, 'error', '繝ｪ繧ｻ繝・ヨ繝ｪ繝ｳ繧ｯ縺檎┌蜉ｹ縺ｧ縺吶ょ・蠎ｦ謇狗ｶ壹″繧定｡後▲縺ｦ縺上□縺輔＞縲・);
     return res.redirect('/password/reset');
   }
   if (Date.parse(record.expires_at) <= Date.now()) {
-    setFlash(req, 'error', 'リセットリンクの有効期限が切れています。');
+    setFlash(req, 'error', '繝ｪ繧ｻ繝・ヨ繝ｪ繝ｳ繧ｯ縺ｮ譛牙柑譛滄剞縺悟・繧後※縺・∪縺吶・);
     return res.redirect('/password/reset');
   }
 
-  const user = getUserById(record.user_id);
+  const user = await getUserById(record.user_id);
   if (!user) {
-    setFlash(req, 'error', 'ユーザーが存在しません。');
+    setFlash(req, 'error', '繝ｦ繝ｼ繧ｶ繝ｼ縺悟ｭ伜惠縺励∪縺帙ｓ縲・);
     return res.redirect('/password/reset');
   }
 
@@ -698,11 +732,11 @@ app.post('/password/reset/:token', async (req, res) => {
   }
 
   const hashed = await hashPassword(newPassword);
-  updateUserPassword(user.id, hashed, false);
-  resetLoginFailures(user.id);
-  consumePasswordResetToken(record.id);
+  await updateUserPassword(user.id, hashed, false);
+  await resetLoginFailures(user.id);
+  await consumePasswordResetToken(record.id);
 
-  setFlash(req, 'success', 'パスワードを再設定しました。ログインしてください。');
+  setFlash(req, 'success', '繝代せ繝ｯ繝ｼ繝峨ｒ蜀崎ｨｭ螳壹＠縺ｾ縺励◆縲ゅΟ繧ｰ繧､繝ｳ縺励※縺上□縺輔＞縲・);
   return res.redirect('/login');
 });
 
@@ -718,15 +752,15 @@ app.post(
   requireRole(ROLES.PLATFORM, ROLES.TENANT, ROLES.EMPLOYEE),
   async (req, res) => {
     const { currentPassword, newPassword } = req.body;
-    const user = getUserById(req.session.user.id);
+    const user = await getUserById(req.session.user.id);
     if (!user) {
-      setFlash(req, 'error', 'ユーザーが見つかりません。');
+      setFlash(req, 'error', '繝ｦ繝ｼ繧ｶ繝ｼ縺瑚ｦ九▽縺九ｊ縺ｾ縺帙ｓ縲・);
       return res.redirect('/password/change');
     }
 
     const ok = await comparePassword(currentPassword || '', user.password_hash);
     if (!ok) {
-      setFlash(req, 'error', '現在のパスワードが正しくありません。');
+      setFlash(req, 'error', '迴ｾ蝨ｨ縺ｮ繝代せ繝ｯ繝ｼ繝峨′豁｣縺励￥縺ゅｊ縺ｾ縺帙ｓ縲・);
       return res.redirect('/password/change');
     }
 
@@ -737,25 +771,26 @@ app.post(
     }
 
     const hashed = await hashPassword(newPassword);
-    updateUserPassword(user.id, hashed, false);
-    setMustChangePassword(user.id, false);
+    await updateUserPassword(user.id, hashed, false);
+    await setMustChangePassword(user.id, false);
     if (req.session.user) {
       delete req.session.user.mustChangePassword;
     }
-    setFlash(req, 'success', 'パスワードを変更しました。');
+    setFlash(req, 'success', '繝代せ繝ｯ繝ｼ繝峨ｒ螟画峩縺励∪縺励◆縲・);
     return res.redirect('/');
   }
 );
 
-app.get('/employee', requireRole(ROLES.EMPLOYEE), (req, res) => {
+app.get('/employee', requireRole(ROLES.EMPLOYEE), async (req, res) => {
   const userId = req.session.user.id;
   const now = new Date();
-  const openSession = getOpenWorkSession(userId);
-  const dailySummary = getUserDailySummary(userId, 30);
+  const openSession = await getOpenWorkSession(userId);
+  const dailySummary = await getUserDailySummary(userId, 30);
   const monthDate = toZonedDateTime(now.toISOString());
-  const monthlySummary = getUserMonthlySummary(userId, monthDate.year, monthDate.month);
+  const monthlySummary = await getUserMonthlySummary(userId, monthDate.year, monthDate.month);
 
-  const sessionHistory = getAllWorkSessionsByUser(userId)
+  const allSessions = await getAllWorkSessionsByUser(userId);
+  const sessionHistory = allSessions
     .slice(0, 10)
     .map((session) => {
       const durationMinutes = session.end_time
@@ -764,9 +799,9 @@ app.get('/employee', requireRole(ROLES.EMPLOYEE), (req, res) => {
       return {
         id: session.id,
         startFormatted: formatDateTime(session.start_time),
-        endFormatted: session.end_time ? formatDateTime(session.end_time) : '記録中',
+        endFormatted: session.end_time ? formatDateTime(session.end_time) : '險倬鹸荳ｭ',
         minutes: durationMinutes,
-        formattedMinutes: durationMinutes !== null ? formatMinutesToHM(durationMinutes) : '—',
+        formattedMinutes: durationMinutes !== null ? formatMinutesToHM(durationMinutes) : '窶・,
       };
     });
 
@@ -783,25 +818,25 @@ app.get('/employee', requireRole(ROLES.EMPLOYEE), (req, res) => {
   });
 });
 
-app.post('/employee/record', requireRole(ROLES.EMPLOYEE), (req, res) => {
+app.post('/employee/record', requireRole(ROLES.EMPLOYEE), async (req, res) => {
   const userId = req.session.user.id;
-  const openSession = getOpenWorkSession(userId);
+  const openSession = await getOpenWorkSession(userId);
   const nowIso = new Date().toISOString();
   if (openSession) {
-    closeWorkSession(openSession.id, nowIso);
-    setFlash(req, 'success', '勤務終了を記録しました。');
+    await closeWorkSession(openSession.id, nowIso);
+    setFlash(req, 'success', '蜍､蜍咏ｵゆｺ・ｒ險倬鹸縺励∪縺励◆縲・);
   } else {
-    createWorkSession(userId, nowIso);
-    setFlash(req, 'success', '勤務開始を記録しました。');
+    await createWorkSession(userId, nowIso);
+    setFlash(req, 'success', '蜍､蜍咎幕蟋九ｒ險倬鹸縺励∪縺励◆縲・);
   }
-  res.redirect('/employee');
+  return res.redirect('/employee');
 });
 
 app.get(
   '/admin',
   requireRole(ROLES.TENANT),
   ensureTenantContext,
-  (req, res) => {
+  async (req, res) => {
     const now = new Date();
     const { year, month } = req.query;
     const baseDate =
@@ -812,7 +847,7 @@ app.get(
     const targetMonth = parseInt(month || baseDate.month, 10);
 
     const tenantId = req.session.user.tenantId;
-    const monthlySummary = getMonthlySummaryForAllEmployees(tenantId, targetYear, targetMonth);
+    const monthlySummary = await getMonthlySummaryForAllEmployees(tenantId, targetYear, targetMonth);
 
     res.render('admin_dashboard', {
       monthlySummary,
@@ -827,10 +862,11 @@ app.get(
   '/admin/role-codes',
   requireRole(ROLES.TENANT),
   ensureTenantContext,
-  (req, res) => {
+  async (req, res) => {
     const tenantId = req.session.user.tenantId;
     const now = Date.now();
-    const codes = listRoleCodesByTenant(tenantId).map((code) => {
+    const codeRows = await listRoleCodesByTenant(tenantId);
+    const codes = codeRows.map((code) => {
       const expiresAtMs = code.expires_at ? Date.parse(code.expires_at) : null;
       const isExpired = Boolean(expiresAtMs && expiresAtMs <= now);
       const isExhausted = code.max_uses !== null && code.usage_count >= code.max_uses;
@@ -870,14 +906,14 @@ app.post(
   '/admin/role-codes',
   requireRole(ROLES.TENANT),
   ensureTenantContext,
-  (req, res) => {
+  async (req, res) => {
     const tenantId = req.session.user.tenantId;
     const expiresInput = (req.body.expiresAt || '').trim();
     const maxUsesInput = (req.body.maxUses || '').trim();
     const expiresAt = expiresInput ? parseDateTimeInput(expiresInput) : null;
 
     if (expiresAt && Date.parse(expiresAt) <= Date.now()) {
-      setFlash(req, 'error', '有効期限は現在より後の日時を指定してください。');
+      setFlash(req, 'error', '譛牙柑譛滄剞縺ｯ迴ｾ蝨ｨ繧医ｊ蠕後・譌･譎ゅｒ謖・ｮ壹＠縺ｦ縺上□縺輔＞縲・);
       return res.redirect('/admin/role-codes');
     }
 
@@ -885,18 +921,23 @@ app.post(
     if (maxUsesInput) {
       const parsed = Number.parseInt(maxUsesInput, 10);
       if (Number.isNaN(parsed) || parsed <= 0) {
-        setFlash(req, 'error', '使用回数上限は1以上の整数で指定してください。');
+        setFlash(req, 'error', '菴ｿ逕ｨ蝗樊焚荳企剞縺ｯ1莉･荳翫・謨ｴ謨ｰ縺ｧ謖・ｮ壹＠縺ｦ縺上□縺輔＞縲・);
         return res.redirect('/admin/role-codes');
       }
       maxUses = parsed;
     }
 
     let codeValue = '';
-    do {
+    while (true) {
       codeValue = generateRoleCodeValue();
-    } while (getRoleCodeByCode(codeValue));
+      // eslint-disable-next-line no-await-in-loop
+      const existingCode = await getRoleCodeByCode(codeValue);
+      if (!existingCode) {
+        break;
+      }
+    }
 
-    createRoleCode({
+    await createRoleCode({
       tenantId,
       code: codeValue,
       expiresAt,
@@ -911,7 +952,7 @@ app.post(
       maxUses,
     };
 
-    setFlash(req, 'success', 'ロールコードを発行しました。');
+    setFlash(req, 'success', '繝ｭ繝ｼ繝ｫ繧ｳ繝ｼ繝峨ｒ逋ｺ陦後＠縺ｾ縺励◆縲・);
     return res.redirect('/admin/role-codes');
   }
 );
@@ -920,16 +961,16 @@ app.post(
   '/admin/role-codes/:codeId/disable',
   requireRole(ROLES.TENANT),
   ensureTenantContext,
-  (req, res) => {
+  async (req, res) => {
     const tenantId = req.session.user.tenantId;
     const codeId = Number.parseInt(req.params.codeId, 10);
-    const roleCode = Number.isNaN(codeId) ? null : getRoleCodeById(codeId);
+    const roleCode = Number.isNaN(codeId) ? null : await getRoleCodeById(codeId);
     if (!roleCode || roleCode.tenant_id !== tenantId) {
-      setFlash(req, 'error', 'ロールコードが見つかりません。');
+      setFlash(req, 'error', '繝ｭ繝ｼ繝ｫ繧ｳ繝ｼ繝峨′隕九▽縺九ｊ縺ｾ縺帙ｓ縲・);
       return res.redirect('/admin/role-codes');
     }
-    disableRoleCode(roleCode.id);
-    setFlash(req, 'success', 'ロールコードを無効化しました。');
+    await disableRoleCode(roleCode.id);
+    setFlash(req, 'success', '繝ｭ繝ｼ繝ｫ繧ｳ繝ｼ繝峨ｒ辟｡蜉ｹ蛹悶＠縺ｾ縺励◆縲・);
     return res.redirect('/admin/role-codes');
   }
 );
@@ -938,8 +979,8 @@ app.get(
   '/admin/employees/:userId/sessions',
   requireRole(ROLES.TENANT),
   ensureTenantContext,
-  (req, res) => {
-    const employee = getEmployeeForTenantAdmin(req, res);
+  async (req, res) => {
+    const employee = await getEmployeeForTenantAdmin(req, res);
     if (!employee) {
       return;
     }
@@ -957,7 +998,7 @@ app.get(
     const { start, end } = getMonthRange(targetYear, targetMonth);
     const startIso = start.toUTC().toISO();
     const endIso = end.toUTC().toISO();
-    const records = getWorkSessionsByUserBetween(employee.id, startIso, endIso);
+    const records = await getWorkSessionsByUserBetween(employee.id, startIso, endIso);
 
     const sessions = records.map((session) => {
       const durationMinutes = session.end_time
@@ -968,12 +1009,12 @@ app.get(
         startInput: formatForDateTimeInput(session.start_time),
         endInput: session.end_time ? formatForDateTimeInput(session.end_time) : '',
         startDisplay: formatDateTime(session.start_time),
-        endDisplay: session.end_time ? formatDateTime(session.end_time) : '記録中',
+        endDisplay: session.end_time ? formatDateTime(session.end_time) : '險倬鹸荳ｭ',
         formattedMinutes: durationMinutes !== null ? formatMinutesToHM(durationMinutes) : '--',
       };
     });
 
-    const monthlySummary = getUserMonthlySummary(employee.id, targetYear, targetMonth);
+    const monthlySummary = await getUserMonthlySummary(employee.id, targetYear, targetMonth);
 
     res.render('admin_sessions', {
       employee,
@@ -990,8 +1031,8 @@ app.post(
   '/admin/employees/:userId/sessions',
   requireRole(ROLES.TENANT),
   ensureTenantContext,
-  (req, res) => {
-    const employee = getEmployeeForTenantAdmin(req, res);
+  async (req, res) => {
+    const employee = await getEmployeeForTenantAdmin(req, res);
     if (!employee) {
       return;
     }
@@ -1002,25 +1043,25 @@ app.post(
     const endIso = parseDateTimeInput(endInput);
 
     if (!startIso || !endIso) {
-      setFlash(req, 'error', '開始と終了の日時を正しく入力してください。');
+      setFlash(req, 'error', '髢句ｧ九→邨ゆｺ・・譌･譎ゅｒ豁｣縺励￥蜈･蜉帙＠縺ｦ縺上□縺輔＞縲・);
       res.redirect(buildAdminSessionsUrl(employee.id, req.query));
       return;
     }
 
     if (diffMinutes(startIso, endIso) <= 0) {
-      setFlash(req, 'error', '終了時刻は開始時刻より後に設定してください。');
+      setFlash(req, 'error', '邨ゆｺ・凾蛻ｻ縺ｯ髢句ｧ区凾蛻ｻ繧医ｊ蠕後↓險ｭ螳壹＠縺ｦ縺上□縺輔＞縲・);
       res.redirect(buildAdminSessionsUrl(employee.id, req.query));
       return;
     }
 
-    if (hasOverlappingSessions(employee.id, startIso, endIso)) {
+    if (await hasOverlappingSessions(employee.id, startIso, endIso)) {
       setFlash(req, 'error', OVERLAP_ERROR_MESSAGE);
       res.redirect(buildAdminSessionsUrl(employee.id, req.query));
       return;
     }
 
-    createWorkSessionWithEnd(employee.id, startIso, endIso);
-    setFlash(req, 'success', '勤務記録を追加しました。');
+    await createWorkSessionWithEnd(employee.id, startIso, endIso);
+    setFlash(req, 'success', '蜍､蜍呵ｨ倬鹸繧定ｿｽ蜉縺励∪縺励◆縲・);
     res.redirect(buildAdminSessionsUrl(employee.id, req.query));
   }
 );
@@ -1029,16 +1070,16 @@ app.post(
   '/admin/employees/:userId/sessions/:sessionId/update',
   requireRole(ROLES.TENANT),
   ensureTenantContext,
-  (req, res) => {
-    const employee = getEmployeeForTenantAdmin(req, res);
+  async (req, res) => {
+    const employee = await getEmployeeForTenantAdmin(req, res);
     if (!employee) {
       return;
     }
 
     const sessionId = Number.parseInt(req.params.sessionId, 10);
-    const sessionRecord = Number.isNaN(sessionId) ? null : getWorkSessionById(sessionId);
+    const sessionRecord = Number.isNaN(sessionId) ? null : await getWorkSessionById(sessionId);
     if (!sessionRecord || sessionRecord.user_id !== employee.id) {
-      setFlash(req, 'error', '該当する勤務記録が見つかりません。');
+      setFlash(req, 'error', '隧ｲ蠖薙☆繧句共蜍呵ｨ倬鹸縺瑚ｦ九▽縺九ｊ縺ｾ縺帙ｓ縲・);
       res.redirect(buildAdminSessionsUrl(employee.id, req.query));
       return;
     }
@@ -1048,7 +1089,7 @@ app.post(
     const startIso = parseDateTimeInput(startInput);
 
     if (!startIso) {
-      setFlash(req, 'error', '開始時刻を正しく入力してください。');
+      setFlash(req, 'error', '髢句ｧ区凾蛻ｻ繧呈ｭ｣縺励￥蜈･蜉帙＠縺ｦ縺上□縺輔＞縲・);
       res.redirect(buildAdminSessionsUrl(employee.id, req.query));
       return;
     }
@@ -1057,25 +1098,25 @@ app.post(
     if (endInput) {
       endIso = parseDateTimeInput(endInput);
       if (!endIso) {
-        setFlash(req, 'error', '終了時刻を正しく入力してください。');
+        setFlash(req, 'error', '邨ゆｺ・凾蛻ｻ繧呈ｭ｣縺励￥蜈･蜉帙＠縺ｦ縺上□縺輔＞縲・);
         res.redirect(buildAdminSessionsUrl(employee.id, req.query));
         return;
       }
       if (diffMinutes(startIso, endIso) <= 0) {
-        setFlash(req, 'error', '終了時刻は開始時刻より後に設定してください。');
+        setFlash(req, 'error', '邨ゆｺ・凾蛻ｻ縺ｯ髢句ｧ区凾蛻ｻ繧医ｊ蠕後↓險ｭ螳壹＠縺ｦ縺上□縺輔＞縲・);
         res.redirect(buildAdminSessionsUrl(employee.id, req.query));
         return;
       }
     }
 
-    if (hasOverlappingSessions(employee.id, startIso, endIso, sessionRecord.id)) {
+    if (await hasOverlappingSessions(employee.id, startIso, endIso, sessionRecord.id)) {
       setFlash(req, 'error', OVERLAP_ERROR_MESSAGE);
       res.redirect(buildAdminSessionsUrl(employee.id, req.query));
       return;
     }
 
-    updateWorkSessionTimes(sessionRecord.id, startIso, endIso);
-    setFlash(req, 'success', '勤務記録を更新しました。');
+    await updateWorkSessionTimes(sessionRecord.id, startIso, endIso);
+    setFlash(req, 'success', '蜍､蜍呵ｨ倬鹸繧呈峩譁ｰ縺励∪縺励◆縲・);
     res.redirect(buildAdminSessionsUrl(employee.id, req.query));
   }
 );
@@ -1084,22 +1125,22 @@ app.post(
   '/admin/employees/:userId/sessions/:sessionId/delete',
   requireRole(ROLES.TENANT),
   ensureTenantContext,
-  (req, res) => {
-    const employee = getEmployeeForTenantAdmin(req, res);
+  async (req, res) => {
+    const employee = await getEmployeeForTenantAdmin(req, res);
     if (!employee) {
       return;
     }
 
     const sessionId = Number.parseInt(req.params.sessionId, 10);
-    const sessionRecord = Number.isNaN(sessionId) ? null : getWorkSessionById(sessionId);
+    const sessionRecord = Number.isNaN(sessionId) ? null : await getWorkSessionById(sessionId);
     if (!sessionRecord || sessionRecord.user_id !== employee.id) {
-      setFlash(req, 'error', '該当する勤務記録が見つかりません。');
+      setFlash(req, 'error', '隧ｲ蠖薙☆繧句共蜍呵ｨ倬鹸縺瑚ｦ九▽縺九ｊ縺ｾ縺帙ｓ縲・);
       res.redirect(buildAdminSessionsUrl(employee.id, req.query));
       return;
     }
 
-    deleteWorkSession(sessionRecord.id);
-    setFlash(req, 'success', '勤務記録を削除しました。');
+    await deleteWorkSession(sessionRecord.id);
+    setFlash(req, 'success', '蜍､蜍呵ｨ倬鹸繧貞炎髯､縺励∪縺励◆縲・);
     res.redirect(buildAdminSessionsUrl(employee.id, req.query));
   }
 );
@@ -1111,39 +1152,39 @@ app.get(
   async (req, res) => {
     const { userId, year, month } = req.query;
     if (!userId) {
-      setFlash(req, 'error', '従業員を選択してください。');
+      setFlash(req, 'error', '蠕捺･ｭ蜩｡繧帝∈謚槭＠縺ｦ縺上□縺輔＞縲・);
       return res.redirect('/admin');
     }
-    const employee = getUserById(Number(userId));
+    const employee = await getUserById(Number(userId));
     if (
       !employee ||
       employee.role !== ROLES.EMPLOYEE ||
       employee.tenant_id !== req.session.user.tenantId
     ) {
-      setFlash(req, 'error', '対象の従業員が見つかりません。');
+      setFlash(req, 'error', '蟇ｾ雎｡縺ｮ蠕捺･ｭ蜩｡縺瑚ｦ九▽縺九ｊ縺ｾ縺帙ｓ縲・);
       return res.redirect('/admin');
     }
     const now = toZonedDateTime(new Date().toISOString());
     const targetYear = parseInt(year || now.year, 10);
     const targetMonth = parseInt(month || now.month, 10);
 
-    const detailed = getUserMonthlyDetailedSessions(employee.id, targetYear, targetMonth);
+    const detailed = await getUserMonthlyDetailedSessions(employee.id, targetYear, targetMonth);
     const { start } = getMonthRange(targetYear, targetMonth);
     const fileName = `${employee.username}_${start.toFormat('yyyyMM')}.xlsx`;
 
     const workbook = await XlsxPopulate.fromBlankAsync();
     const sheet = workbook.sheet(0);
-    sheet.name('勤務記録');
+    sheet.name('蜍､蜍呵ｨ倬鹸');
 
-    sheet.cell('A1').value('従業員');
+    sheet.cell('A1').value('蠕捺･ｭ蜩｡');
     sheet.cell('B1').value(employee.username);
-    sheet.cell('A2').value('対象月');
-    sheet.cell('B2').value(`${targetYear}年${String(targetMonth).padStart(2, '0')}月`);
-    sheet.cell('A4').value('日付');
-    sheet.cell('B4').value('勤務開始');
-    sheet.cell('C4').value('勤務終了');
-    sheet.cell('D4').value('勤務時間(分)');
-    sheet.cell('E4').value('勤務時間(時:分)');
+    sheet.cell('A2').value('蟇ｾ雎｡譛・);
+    sheet.cell('B2').value(`${targetYear}蟷ｴ${String(targetMonth).padStart(2, '0')}譛・);
+    sheet.cell('A4').value('譌･莉・);
+    sheet.cell('B4').value('蜍､蜍咎幕蟋・);
+    sheet.cell('C4').value('蜍､蜍咏ｵゆｺ・);
+    sheet.cell('D4').value('蜍､蜍呎凾髢・蛻・');
+    sheet.cell('E4').value('蜍､蜍呎凾髢・譎・蛻・');
 
     let row = 5;
     detailed.days.forEach((day) => {
@@ -1162,8 +1203,8 @@ app.get(
       }
     });
 
-    sheet.cell(`D${row + 1}`).value('合計(分)');
-    sheet.cell(`E${row + 1}`).value('合計(時:分)');
+    sheet.cell(`D${row + 1}`).value('蜷郁ｨ・蛻・');
+    sheet.cell(`E${row + 1}`).value('蜷郁ｨ・譎・蛻・');
     sheet.cell(`D${row + 2}`).value(detailed.totalMinutes);
     sheet.cell(`E${row + 2}`).value(detailed.formattedTotal);
 
@@ -1178,9 +1219,9 @@ app.get(
   }
 );
 
-app.get('/platform/tenants', requireRole(ROLES.PLATFORM), (req, res) => {
-  const tenants = listTenants().map((tenant) => ({
-    ...tenant,
+app.get('/platform/tenants', requireRole(ROLES.PLATFORM), async (req, res) => {
+  const tenantRows = await listTenants();
+  const tenants = tenantRows.map((tenant) => ({
     createdAtDisplay: formatDisplayDateTime(tenant.created_at),
   }));
   const generated = req.session.generatedTenantCredential || null;
@@ -1194,38 +1235,39 @@ app.get('/platform/tenants', requireRole(ROLES.PLATFORM), (req, res) => {
 });
 
 app.post('/platform/tenants', requireRole(ROLES.PLATFORM), async (req, res) => {
-  const tenantNameResult = validateNameField('テナント名', req.body.tenantName || '名称未設定');
+  const tenantNameResult = validateNameField('繝・リ繝ｳ繝亥錐', req.body.tenantName || '蜷咲ｧｰ譛ｪ險ｭ螳・);
   if (!tenantNameResult.valid) {
     setFlash(req, 'error', tenantNameResult.message);
     return res.redirect('/platform/tenants');
   }
   const contactEmail = normalizeEmail(req.body.contactEmail);
   if (!contactEmail) {
-    setFlash(req, 'error', 'テナント連絡先メールアドレスを入力してください。');
+    setFlash(req, 'error', '繝・リ繝ｳ繝磯｣邨｡蜈医Γ繝ｼ繝ｫ繧｢繝峨Ξ繧ｹ繧貞・蜉帙＠縺ｦ縺上□縺輔＞縲・);
     return res.redirect('/platform/tenants');
   }
-  const adminFirstNameResult = validateNameField('管理者名（名）', req.body.adminFirstName);
+  const adminFirstNameResult = validateNameField('邂｡逅・・錐・亥錐・・, req.body.adminFirstName);
   if (!adminFirstNameResult.valid) {
     setFlash(req, 'error', adminFirstNameResult.message);
     return res.redirect('/platform/tenants');
   }
-  const adminLastNameResult = validateNameField('管理者名（姓）', req.body.adminLastName);
+  const adminLastNameResult = validateNameField('邂｡逅・・錐・亥ｧ難ｼ・, req.body.adminLastName);
   if (!adminLastNameResult.valid) {
     setFlash(req, 'error', adminLastNameResult.message);
     return res.redirect('/platform/tenants');
   }
   const adminEmail = normalizeEmail(req.body.adminEmail);
   if (!adminEmail) {
-    setFlash(req, 'error', '管理者のメールアドレスを入力してください。');
+    setFlash(req, 'error', '邂｡逅・・・繝｡繝ｼ繝ｫ繧｢繝峨Ξ繧ｹ繧貞・蜉帙＠縺ｦ縺上□縺輔＞縲・);
     return res.redirect('/platform/tenants');
   }
-  if (getUserByEmail(adminEmail)) {
-    setFlash(req, 'error', '指定された管理者メールアドレスは既に使用されています。');
+  const existingTenantAdmin = await getUserByEmail(adminEmail);
+  if (existingTenantAdmin) {
+    setFlash(req, 'error', '謖・ｮ壹＆繧後◆邂｡逅・・Γ繝ｼ繝ｫ繧｢繝峨Ξ繧ｹ縺ｯ譌｢縺ｫ菴ｿ逕ｨ縺輔ｌ縺ｦ縺・∪縺吶・);
     return res.redirect('/platform/tenants');
   }
 
-  const tenantUid = generateTenantUid();
-  const tenant = createTenant({
+  const tenantUid = await generateTenantUid();
+  const tenant = await createTenant({
     tenantUid,
     name: tenantNameResult.value,
     contactEmail,
@@ -1236,7 +1278,7 @@ app.post('/platform/tenants', requireRole(ROLES.PLATFORM), async (req, res) => {
   const username = `${adminLastNameResult.value}${adminFirstNameResult.value}`;
 
   try {
-    createUser({
+    await createUser({
       tenantId: tenant.id,
       username,
       email: adminEmail,
@@ -1247,8 +1289,8 @@ app.post('/platform/tenants', requireRole(ROLES.PLATFORM), async (req, res) => {
       lastName: adminLastNameResult.value,
     });
   } catch (error) {
-    console.error('[platform] テナント管理者作成に失敗しました', error);
-    setFlash(req, 'error', 'テナント管理者の作成に失敗しました。');
+    console.error('[platform] 繝・リ繝ｳ繝育ｮ｡逅・・ｽ懈・縺ｫ螟ｱ謨励＠縺ｾ縺励◆', error);
+    setFlash(req, 'error', '繝・リ繝ｳ繝育ｮ｡逅・・・菴懈・縺ｫ螟ｱ謨励＠縺ｾ縺励◆縲・);
     return res.redirect('/platform/tenants');
   }
 
@@ -1258,7 +1300,7 @@ app.post('/platform/tenants', requireRole(ROLES.PLATFORM), async (req, res) => {
     initialPassword,
   };
 
-  setFlash(req, 'success', 'テナントと管理者アカウントを作成しました。');
+  setFlash(req, 'success', '繝・リ繝ｳ繝医→邂｡逅・・い繧ｫ繧ｦ繝ｳ繝医ｒ菴懈・縺励∪縺励◆縲・);
   return res.redirect('/platform/tenants');
 });
 
@@ -1269,7 +1311,7 @@ app.use((err, req, res, next) => {
   // eslint-disable-next-line no-console
   console.warn('[csrf] Invalid CSRF token detected', { path: req.path });
   if (req.session) {
-    setFlash(req, 'error', 'セキュリティチェックに失敗しました。もう一度操作をやり直してください。');
+    setFlash(req, 'error', '繧ｻ繧ｭ繝･繝ｪ繝・ぅ繝√ぉ繝・け縺ｫ螟ｱ謨励＠縺ｾ縺励◆縲ゅｂ縺・ｸ蠎ｦ謫堺ｽ懊ｒ繧・ｊ逶ｴ縺励※縺上□縺輔＞縲・);
     const fallbackRedirect = req.get('referer') || '/';
     return res.redirect(fallbackRedirect);
   }
@@ -1277,3 +1319,5 @@ app.use((err, req, res, next) => {
 });
 
 module.exports = app;
+
+

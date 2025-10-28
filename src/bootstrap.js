@@ -1,13 +1,18 @@
-const { ensureDefaultPlatformAdmin } = require('./db');
+const { ensureDefaultPlatformAdmin, initializeDatabase } = require('./db');
 
-let initialized = false;
+let initPromise = null;
 
-function initializeApp() {
-  if (initialized) {
-    return;
+async function initializeApp() {
+  if (initPromise) {
+    return initPromise;
   }
-  ensureDefaultPlatformAdmin();
-  initialized = true;
+
+  initPromise = (async () => {
+    await initializeDatabase();
+    await ensureDefaultPlatformAdmin();
+  })();
+
+  return initPromise;
 }
 
 module.exports = {

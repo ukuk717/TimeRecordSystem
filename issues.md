@@ -40,3 +40,16 @@
     - ~~Fix garbled error message.~~
     - ~~Remove the UTF-8 BOM character.~~
 
+-needs fix-
+
+- knexClient.js
+    - Critical: Insecure SSL configuration.
+    - Fix inconsistent error message.
+- server.js
+    - Process should exit after failed initialization.
+- app.js
+    - ~~Unbounded loop could theoretically hang.~~
+- db.js
+    - ~~Risk: Module-level repository initialization.~~
+- db-migration.md
+    - Minor markdown formatting issue.

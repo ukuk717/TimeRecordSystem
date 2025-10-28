@@ -53,8 +53,8 @@ function splitSessionByDay(start, end) {
   return segments;
 }
 
-function getUserDailySummary(userId, days = 30) {
-  const sessions = getAllWorkSessionsByUser(userId);
+async function getUserDailySummary(userId, days = 30) {
+  const sessions = await getAllWorkSessionsByUser(userId);
   const { start: boundary } = getRecentRange(days);
   const minutesMap = new Map();
 
@@ -79,8 +79,8 @@ function getUserDailySummary(userId, days = 30) {
   return results;
 }
 
-function getUserMonthlySummary(userId, year, month) {
-  const sessions = getAllWorkSessionsByUser(userId);
+async function getUserMonthlySummary(userId, year, month) {
+  const sessions = await getAllWorkSessionsByUser(userId);
   const { start, end } = getMonthRange(year, month);
   const minutesMap = new Map();
 
@@ -108,8 +108,8 @@ function getUserMonthlySummary(userId, year, month) {
   return { byDay, totalMinutes, formattedTotal: formatMinutesToHM(totalMinutes) };
 }
 
-function getUserMonthlyDetailedSessions(userId, year, month) {
-  const sessions = getAllWorkSessionsByUser(userId);
+async function getUserMonthlyDetailedSessions(userId, year, month) {
+  const sessions = await getAllWorkSessionsByUser(userId);
   const { start, end } = getMonthRange(year, month);
   const grouped = new Map();
 
@@ -160,16 +160,19 @@ function getUserMonthlyDetailedSessions(userId, year, month) {
   return { days: summary, totalMinutes, formattedTotal: formatMinutesToHM(totalMinutes) };
 }
 
-function getMonthlySummaryForAllEmployees(tenantId, year, month) {
-  const employees = getAllEmployeesByTenant(tenantId);
-  return employees.map((employee) => {
-    const summary = getUserMonthlySummary(employee.id, year, month);
-    return {
-      user: employee,
-      totalMinutes: summary.totalMinutes,
-      formattedTotal: summary.formattedTotal,
-    };
-  });
+async function getMonthlySummaryForAllEmployees(tenantId, year, month) {
+  const employees = await getAllEmployeesByTenant(tenantId);
+  const summaries = await Promise.all(
+    employees.map(async (employee) => {
+      const summary = await getUserMonthlySummary(employee.id, year, month);
+      return {
+        user: employee,
+        totalMinutes: summary.totalMinutes,
+        formattedTotal: summary.formattedTotal,
+      };
+    })
+  );
+  return summaries;
 }
 
 module.exports = {
