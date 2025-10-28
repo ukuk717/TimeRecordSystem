@@ -1,11 +1,11 @@
 process.env.TZ = process.env.APP_TIMEZONE || 'Asia/Tokyo';
 
 const app = require('./src/app');
-const { ensureDefaultPlatformAdmin } = require('./src/db');
+const { initializeApp } = require('./src/bootstrap');
 
 const PORT = process.env.PORT || 3000;
 
-ensureDefaultPlatformAdmin();
+initializeApp();
 
 app.listen(PORT, () => {
   // eslint-disable-next-line no-console
