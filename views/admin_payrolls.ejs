@@ -79,7 +79,6 @@
 
         <div class="form-actions">
           <button type="submit" class="btn primary">送信</button>
-          <button type="button" class="btn" id="payrollResetButton">続けて送信する</button>
         </div>
         <p class="form-error" id="payrollFormError" hidden></p>
       </form>
@@ -160,7 +159,6 @@
       const fileInput = document.getElementById('payrollFile');
       const fileButton = document.getElementById('payrollFileButton');
       const fileNameLabel = document.getElementById('payrollFileName');
-      const resetButton = document.getElementById('payrollResetButton');
       const errorBox = document.getElementById('payrollFormError');
       const forceResendInput = document.getElementById('payrollForceResend');
       const dialog = document.getElementById('payrollConfirmDialog');
@@ -173,20 +171,6 @@
 
       let isDuplicate = false;
       let confirmed = false;
-
-      const clearForm = () => {
-        form.reset();
-        if (fileNameLabel) {
-          fileNameLabel.textContent = 'ファイルが選択されていません';
-        }
-        if (forceResendInput) {
-          forceResendInput.value = 'false';
-        }
-        if (errorBox) {
-          errorBox.hidden = true;
-          errorBox.textContent = '';
-        }
-      };
 
       if (fileButton && fileInput) {
         fileButton.addEventListener('click', () => fileInput.click());
@@ -201,11 +185,6 @@
           }
         });
       }
-
-      if (resetButton) {
-        resetButton.addEventListener('click', clearForm);
-      }
-
       if (dialog) {
         dialog.addEventListener('click', (event) => {
           if (event.target === dialog) {

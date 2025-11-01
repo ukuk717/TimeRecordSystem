@@ -4,7 +4,7 @@
   "description": "",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
+    "start": "node --env-file=.env server.js",
     "test": "cross-env NODE_ENV=test DB_FILE=:memory: jest --runInBand"
   },
   "repository": {

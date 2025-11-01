@@ -145,6 +145,18 @@ function parseBoolean(value, fallback = false) {
   return fallback;
 }
 
+function resolveSessionCookieSecure() {
+  const raw = process.env.SESSION_COOKIE_SECURE;
+  if (raw === undefined || raw === null || String(raw).trim() === '') {
+    return 'auto';
+  }
+  const normalized = String(raw).trim().toLowerCase();
+  if (normalized === 'auto') {
+    return 'auto';
+  }
+  return parseBoolean(raw, false);
+}
+
 const configuredSessionTtlSeconds = parsePositiveInt(
   process.env.SESSION_TTL_SECONDS,
   DEFAULT_SESSION_TTL_SECONDS
@@ -263,14 +275,39 @@ function formatReadableBytes(bytes) {
   return `${display} ${units[idx]}`;
 }
 
+function createAsciiFallbackName(value) {
+  const sanitized = value
+    .replace(/["'\\]/g, '')
+    .replace(/[;=]/g, '_')
+    .replace(/[^\x20-\x7E]+/g, '_')
+    .replace(/_+/g, '_')
+    .trim();
+  if (sanitized.length === 0) {
+    return 'download';
+  }
+  return sanitized;
+}
+
 function applyContentDisposition(res, fileName, disposition = 'attachment') {
   const baseName = (fileName || 'payroll').toString().replace(/\r|\n/g, '');
-  const sanitized = baseName.replace(/"/g, '');
+  const fallbackName = createAsciiFallbackName(baseName);
   const encoded = encodeURIComponent(baseName);
   res.setHeader(
     'Content-Disposition',
-    `${disposition}; filename="${sanitized}"; filename*=UTF-8''${encoded}`
+    `${disposition}; filename="${fallbackName}"; filename*=UTF-8''${encoded}`
   );
+}
+
+function decodeUploadedFileName(fileName) {
+  if (typeof fileName !== 'string' || fileName.length === 0) {
+    return '';
+  }
+  const withoutNull = fileName.replace(/\0/g, '');
+  try {
+    return Buffer.from(withoutNull, 'latin1').toString('utf8');
+  } catch (error) {
+    return withoutNull;
+  }
 }
 
 function loadSessionSecret() {
@@ -335,12 +372,19 @@ function createSessionStore(secret) {
     process.env.SESSION_PRUNE_INTERVAL_MS,
     10 * 60 * 1000
   );
+  const handleCleanupError = (error) => {
+    if (!isTestEnv) {
+      // eslint-disable-next-line no-console
+      console.warn('[session] Failed to prune expired sessions.', error);
+    }
+  };
   return new KnexSessionStore({
     knex: getSqlClient(),
     tablename: process.env.SESSION_TABLE_NAME || 'sessions',
     createtable: true,
     clearInterval: clearIntervalMs,
-    ttl: configuredSessionTtlSeconds * 1000,
+    ttl: configuredSessionTtlSeconds,
+    onDbCleanupError: handleCleanupError,
   });
 }
 
@@ -418,7 +462,7 @@ app.use(
       maxAge: configuredSessionTtlSeconds * 1000,
       httpOnly: true,
       sameSite: 'lax',
-      secure: parseBoolean(process.env.SESSION_COOKIE_SECURE, process.env.NODE_ENV === 'production'),
+      secure: resolveSessionCookieSecure(),
     },
   })
 );
@@ -957,7 +1001,6 @@ app.get('/employee/payrolls', requireRole(ROLES.EMPLOYEE), async (req, res, next
     const records = await listPayrollRecordsByEmployee(userId);
     const decorated = records.map((record) => ({
       id: record.id,
-      sentOnDisplay: formatDateKey(record.sent_on),
       sentAtDisplay: formatDateTime(record.sent_at),
       originalFileName: record.original_file_name,
       fileSizeDisplay: formatReadableBytes(record.file_size),
@@ -1171,6 +1214,9 @@ app.post(
         return res.redirect('/admin/payrolls');
       }
 
+      const originalFileName =
+        decodeUploadedFileName(uploadedFile.originalname) || uploadedFile.originalname || '';
+
       const employee = await getUserById(employeeId);
       if (!employee || employee.tenant_id !== tenantId || employee.role !== ROLES.EMPLOYEE) {
         setFlash(req, 'error', '選択された従業員が見つかりません。');
@@ -1178,7 +1224,7 @@ app.post(
         return res.redirect('/admin/payrolls');
       }
 
-      if (!validatePayrollExtension(uploadedFile.originalname)) {
+      if (!validatePayrollExtension(originalFileName)) {
         setFlash(
           req,
           'error',
@@ -1211,7 +1257,7 @@ app.post(
         tenantId,
         employeeId: employee.id,
         uploadedBy: adminId,
-        originalFileName: uploadedFile.originalname,
+        originalFileName,
         storedFilePath: storedRelativePath,
         mimeType: uploadedFile.mimetype,
         fileSize: uploadedFile.size,
@@ -1219,7 +1265,7 @@ app.post(
         sentAt: sentAtIso,
       });
 
-      setFlash(req, 'success', '給与明細を送信しました。続けて送信する場合は同じフォームをご利用ください。');
+      setFlash(req, 'success', '給与明細を送信しました。');
       return res.redirect('/admin/payrolls');
     } catch (error) {
       if (uploadedFile) {
@@ -1644,6 +1690,7 @@ app.get(
 app.get('/platform/tenants', requireRole(ROLES.PLATFORM), async (req, res) => {
   const tenantRows = await listTenants();
   const tenants = tenantRows.map((tenant) => ({
+    ...tenant,
     createdAtDisplay: formatDisplayDateTime(tenant.created_at),
   }));
   const generated = req.session.generatedTenantCredential || null;

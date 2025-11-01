@@ -28,12 +28,11 @@
     <section class="card">
       <h2>給与明細一覧</h2>
       <p class="form-note">
-        受信済みの給与明細は以下に表示されます。ダウンロードして保管するか、プレビューから印刷してください。
+        受信済みの給与明細は以下に表示されます。ダウンロードして保管するか、印刷してください。
       </p>
       <table class="table">
         <thead>
           <tr>
-            <th>送信日</th>
             <th>送信時刻</th>
             <th>ファイル名</th>
             <th>サイズ</th>
@@ -42,11 +41,10 @@
         </thead>
         <tbody>
           <% if (!payrollRecords || payrollRecords.length === 0) { %>
-            <tr><td colspan="5">給与明細はまだ届いていません。送信されるとここに表示されます。</td></tr>
+            <tr><td colspan="4">給与明細はまだ届いていません。送信されるとここに表示されます。</td></tr>
           <% } else { %>
             <% payrollRecords.forEach(function(record) { %>
               <tr>
-                <td><%= record.sentOnDisplay %></td>
                 <td><%= record.sentAtDisplay %></td>
                 <td><%= record.originalFileName %></td>
                 <td><%= record.fileSizeDisplay || '-' %></td>
@@ -66,4 +64,3 @@
   </main>
 </body>
 </html>
-

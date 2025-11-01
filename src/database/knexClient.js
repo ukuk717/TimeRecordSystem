@@ -75,7 +75,13 @@ function buildConnectionConfig() {
   }
 
   if (provider === 'sqlite3') {
-    const filename = process.env.SQLITE_FILENAME || ':memory:';
+    const rawFilename =
+      process.env.SQLITE_FILENAME ||
+      process.env.DB_FILE ||
+      process.env.DB_PATH ||
+      ':memory:';
+    const filename =
+      rawFilename === ':memory:' ? ':memory:' : path.resolve(process.cwd(), rawFilename);
     const config = {
       client: 'sqlite3',
       connection: {
