@@ -1,4 +1,5 @@
 const knex = require('knex');
+const path = require('path');
 
 let knexInstance;
 
@@ -59,22 +60,31 @@ function buildConnectionConfig() {
   })();
   const provider = resolveClientName(providerName);
 
+  const migrations = {
+    directory: path.resolve(__dirname, '../../migrations'),
+    tableName: process.env.DB_MIGRATIONS_TABLE || 'knex_migrations',
+    loadExtensions: ['.js'],
+  };
+
   if (explicitUrl) {
     return {
       client: provider,
       connection: explicitUrl,
+      migrations,
     };
   }
 
   if (provider === 'sqlite3') {
     const filename = process.env.SQLITE_FILENAME || ':memory:';
-    return {
+    const config = {
       client: 'sqlite3',
       connection: {
         filename,
       },
       useNullAsDefault: true,
     };
+    config.migrations = migrations;
+    return config;
   }
 
   const host = process.env.DB_HOST;
@@ -90,7 +100,7 @@ function buildConnectionConfig() {
   const sslEnabled = toBoolean(process.env.DB_SSL, provider === 'pg');
   const rejectUnauthorized = toBoolean(process.env.DB_SSL_REJECT_UNAUTHORIZED, true);
 
-  return {
+  const config = {
     client: provider,
     connection: {
       host,
@@ -124,6 +134,8 @@ function buildConnectionConfig() {
     },
     debug: toBoolean(process.env.DB_DEBUG, false),
   };
+  config.migrations = migrations;
+  return config;
 }
 
 function getKnexClient() {
@@ -142,6 +154,7 @@ async function destroyKnexClient() {
 }
 
 module.exports = {
+  buildConnectionConfig,
   getKnexClient,
   destroyKnexClient,
 };

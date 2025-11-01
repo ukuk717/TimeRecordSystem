@@ -2,6 +2,9 @@
 
 - All responses to users must be in Japanese. If the output is in English, it must be translated before output.
 - Please ensure that Japanese text is entered strictly in UTF-8 format. Mixing with other encodings such as Shift-JIS is not permitted.
+
+# Critical AGENTS Warning
+- In principle, the execution of Python code is prohibited. If there is anything that can only be executed using Python, be sure to confirm with the user the reason. The arbitrary execution of Python code is prohibited.
 ## Critical Test Warning
 - Do not run `npm test`, `npm run test`, `npx jest`, or `yarn test`.
 - Running the Jest suite currently hangs indefinitely and freezes the session (observed on 2025-10-21). Treat tests as unavailable until this note is removed.
