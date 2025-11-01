@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>給与明細送信 | 勤怠管理システム</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <h1>勤怠管理システム - テナント管理者</h1>
+    <nav>
+      <a href="/admin" class="nav-link">ダッシュボード</a>
+      <a href="/admin/payrolls" class="nav-link">給与明細送信</a>
+      <a href="/admin/role-codes" class="nav-link">ロールコード管理</a>
+      <a href="/password/change" class="nav-link">パスワード変更</a>
+      <form method="post" action="/logout" class="nav-form">
+        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+        <button type="submit" class="btn link">ログアウト</button>
+      </form>
+    </nav>
+  </header>
+  <main class="container">
+    <% if (flash) { %>
+      <div class="flash <%= flash.type %>"><%= flash.message %></div>
+    <% } %>
+
+    <% const allowedDisplay = (allowedExtensions || []).join('、 '); %>
+    <% const maxFileSizeMB = Math.max(1, Math.round((maxFileSizeBytes || 0) / (1024 * 1024))); %>
+
+    <section class="card">
+      <header class="section-header">
+        <h2>給与明細を送信する</h2>
+        <p class="section-subtitle">従業員ごとに任意のタイミングで給与明細を通知できます。</p>
+      </header>
+      <form
+        id="payrollSendForm"
+        class="form"
+        method="post"
+        action="/admin/payrolls/send?_csrf=<%= encodeURIComponent(csrfToken) %>"
+        enctype="multipart/form-data"
+      >
+        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+        <input type="hidden" name="forceResend" id="payrollForceResend" value="false">
+
+        <label class="form-field" for="payrollEmployee">
+          <span>従業員名</span>
+          <select id="payrollEmployee" name="employeeId" required>
+            <option value="">従業員を選択してください</option>
+            <% employees.forEach(function(employee) { %>
+              <option value="<%= employee.id %>">
+                <%= employee.name %>
+                <% if (employee.email) { %>
+                  （<%= employee.email %>）
+                <% } %>
+              </option>
+            <% }); %>
+          </select>
+        </label>
+
+        <div class="form-field">
+          <span>給与明細ファイル</span>
+          <div class="file-input">
+            <input
+              type="file"
+              id="payrollFile"
+              name="payrollFile"
+              accept="<%= (allowedExtensions || []).join(',') %>"
+              hidden
+              required
+            >
+            <button type="button" class="btn secondary" id="payrollFileButton">給与明細を添付する</button>
+            <span class="payroll-file-name" id="payrollFileName">ファイルが選択されていません</span>
+          </div>
+          <small class="form-note">
+            対応拡張子: <%= allowedDisplay %> / 最大 <%= maxFileSizeMB %>MB までアップロードできます。
+          </small>
+        </div>
+
+        <div class="form-actions">
+          <button type="submit" class="btn primary">送信</button>
+          <button type="button" class="btn" id="payrollResetButton">続けて送信する</button>
+        </div>
+        <p class="form-error" id="payrollFormError" hidden></p>
+      </form>
+    </section>
+
+    <section class="card">
+      <h2>送信履歴</h2>
+      <table class="table">
+        <thead>
+          <tr>
+            <th>送信日</th>
+            <th>送信時刻</th>
+            <th>従業員</th>
+            <th>ファイル名</th>
+            <th>サイズ</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          <% if (!payrollRecords || payrollRecords.length === 0) { %>
+            <tr><td colspan="6">まだ送信履歴がありません。</td></tr>
+          <% } else { %>
+            <% payrollRecords.forEach(function(record) { %>
+              <tr>
+                <td><%= record.sentOnDisplay %></td>
+                <td><%= record.sentAtDisplay %></td>
+                <td>
+                  <div class="user-cell">
+                    <span class="user-name"><%= record.employeeName %></span>
+                    <% if (record.employeeEmail) { %>
+                      <span class="user-email"><%= record.employeeEmail %></span>
+                    <% } %>
+                  </div>
+                </td>
+                <td><%= record.originalFileName %></td>
+                <td><%= record.fileSizeDisplay || '-' %></td>
+                <td>
+                  <a class="btn secondary" href="<%= record.downloadUrl %>">ダウンロード</a>
+                  <a class="btn link" href="<%= record.inlineUrl %>" target="_blank" rel="noopener">プレビュー</a>
+                </td>
+              </tr>
+            <% }); %>
+          <% } %>
+        </tbody>
+      </table>
+    </section>
+  </main>
+
+  <div class="dialog-backdrop" id="payrollConfirmDialog" hidden>
+    <div class="dialog">
+      <h3>送信内容の確認</h3>
+      <p>以下の内容で給与明細を送信します。内容を確認してください。</p>
+      <dl class="definition-list">
+        <div>
+          <dt>従業員名</dt>
+          <dd id="confirmEmployeeName">-</dd>
+        </div>
+        <div>
+          <dt>添付ファイル名</dt>
+          <dd id="confirmFileName">-</dd>
+        </div>
+      </dl>
+      <p class="form-note" id="payrollDuplicateMessage" hidden>既に送信済みです。もう一度送信しますか？</p>
+      <div class="dialog-actions">
+        <button type="button" class="btn" id="payrollConfirmCancel">キャンセル</button>
+        <button type="button" class="btn primary" id="payrollConfirmSubmit">送信</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      const form = document.getElementById('payrollSendForm');
+      if (!form) {
+        return;
+      }
+      const employeeSelect = document.getElementById('payrollEmployee');
+      const fileInput = document.getElementById('payrollFile');
+      const fileButton = document.getElementById('payrollFileButton');
+      const fileNameLabel = document.getElementById('payrollFileName');
+      const resetButton = document.getElementById('payrollResetButton');
+      const errorBox = document.getElementById('payrollFormError');
+      const forceResendInput = document.getElementById('payrollForceResend');
+      const dialog = document.getElementById('payrollConfirmDialog');
+      const confirmEmployee = document.getElementById('confirmEmployeeName');
+      const confirmFile = document.getElementById('confirmFileName');
+      const duplicateMessage = document.getElementById('payrollDuplicateMessage');
+      const confirmSubmit = document.getElementById('payrollConfirmSubmit');
+      const confirmCancel = document.getElementById('payrollConfirmCancel');
+      const sentToday = new Set(<%- JSON.stringify(sentTodayEmployeeIds || []) %>);
+
+      let isDuplicate = false;
+      let confirmed = false;
+
+      const clearForm = () => {
+        form.reset();
+        if (fileNameLabel) {
+          fileNameLabel.textContent = 'ファイルが選択されていません';
+        }
+        if (forceResendInput) {
+          forceResendInput.value = 'false';
+        }
+        if (errorBox) {
+          errorBox.hidden = true;
+          errorBox.textContent = '';
+        }
+      };
+
+      if (fileButton && fileInput) {
+        fileButton.addEventListener('click', () => fileInput.click());
+      }
+
+      if (fileInput && fileNameLabel) {
+        fileInput.addEventListener('change', () => {
+          if (fileInput.files && fileInput.files.length > 0) {
+            fileNameLabel.textContent = fileInput.files[0].name;
+          } else {
+            fileNameLabel.textContent = 'ファイルが選択されていません';
+          }
+        });
+      }
+
+      if (resetButton) {
+        resetButton.addEventListener('click', clearForm);
+      }
+
+      if (dialog) {
+        dialog.addEventListener('click', (event) => {
+          if (event.target === dialog) {
+            dialog.hidden = true;
+          }
+        });
+      }
+
+      const showError = (message) => {
+        if (!errorBox) return;
+        errorBox.textContent = message;
+        errorBox.hidden = false;
+      };
+
+      form.addEventListener('submit', (event) => {
+        if (confirmed) {
+          confirmed = false;
+          return;
+        }
+        event.preventDefault();
+        if (errorBox) {
+          errorBox.hidden = true;
+        }
+
+        if (!employeeSelect || !employeeSelect.value) {
+          showError('従業員を選択してください。');
+          return;
+        }
+        if (!fileInput || !fileInput.files || fileInput.files.length === 0) {
+          showError('給与明細ファイルを選択してください。');
+          return;
+        }
+
+        const selectedOption = employeeSelect.options[employeeSelect.selectedIndex];
+        confirmEmployee.textContent = selectedOption ? selectedOption.text.trim() : '不明';
+        confirmFile.textContent = fileInput.files[0].name;
+
+        isDuplicate = sentToday.has(employeeSelect.value);
+        duplicateMessage.hidden = !isDuplicate;
+
+        if (dialog) {
+          dialog.hidden = false;
+        }
+      });
+
+      if (confirmSubmit) {
+        confirmSubmit.addEventListener('click', () => {
+          if (forceResendInput) {
+            forceResendInput.value = isDuplicate ? 'true' : 'false';
+          }
+          if (dialog) {
+            dialog.hidden = true;
+          }
+          confirmed = true;
+          form.submit();
+        });
+      }
+
+      if (confirmCancel) {
+        confirmCancel.addEventListener('click', () => {
+          if (dialog) {
+            dialog.hidden = true;
+          }
+        });
+      }
+    })();
+  </script>
+</body>
+</html>

@@ -46,6 +46,11 @@ module.exports = {
   getAllWorkSessionsByUser: bind('getAllWorkSessionsByUser'),
   getWorkSessionById: bind('getWorkSessionById'),
   deleteWorkSession: bind('deleteWorkSession'),
+  createPayrollRecord: bind('createPayrollRecord'),
+  listPayrollRecordsByTenant: bind('listPayrollRecordsByTenant'),
+  listPayrollRecordsByEmployee: bind('listPayrollRecordsByEmployee'),
+  getPayrollRecordById: bind('getPayrollRecordById'),
+  getLatestPayrollRecordForDate: bind('getLatestPayrollRecordForDate'),
   ensureDefaultPlatformAdmin: bind('ensureDefaultPlatformAdmin'),
   deleteAllData: bind('deleteAllData'),
 };

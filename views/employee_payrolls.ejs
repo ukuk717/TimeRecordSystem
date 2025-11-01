@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>給与明細 | 勤怠管理システム</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <h1>勤怠管理システム</h1>
+    <nav>
+      <span class="nav-user"><%= currentUser.username %>さん</span>
+      <a href="/employee" class="nav-link">勤怠ダッシュボード</a>
+      <a href="/employee/payrolls" class="nav-link">給与明細</a>
+      <a href="/password/change" class="nav-link">パスワード変更</a>
+      <form method="post" action="/logout" class="nav-form">
+        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+        <button type="submit" class="btn link">ログアウト</button>
+      </form>
+    </nav>
+  </header>
+  <main class="container">
+    <% if (flash) { %>
+      <div class="flash <%= flash.type %>"><%= flash.message %></div>
+    <% } %>
+
+    <section class="card">
+      <h2>給与明細一覧</h2>
+      <p class="form-note">
+        受信済みの給与明細は以下に表示されます。ダウンロードして保管するか、プレビューから印刷してください。
+      </p>
+      <table class="table">
+        <thead>
+          <tr>
+            <th>送信日</th>
+            <th>送信時刻</th>
+            <th>ファイル名</th>
+            <th>サイズ</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          <% if (!payrollRecords || payrollRecords.length === 0) { %>
+            <tr><td colspan="5">給与明細はまだ届いていません。送信されるとここに表示されます。</td></tr>
+          <% } else { %>
+            <% payrollRecords.forEach(function(record) { %>
+              <tr>
+                <td><%= record.sentOnDisplay %></td>
+                <td><%= record.sentAtDisplay %></td>
+                <td><%= record.originalFileName %></td>
+                <td><%= record.fileSizeDisplay || '-' %></td>
+                <td>
+                  <a class="btn secondary" href="<%= record.downloadUrl %>">ダウンロード</a>
+                  <a class="btn link" href="<%= record.inlineUrl %>" target="_blank" rel="noopener">印刷</a>
+                </td>
+              </tr>
+            <% }); %>
+          <% } %>
+        </tbody>
+      </table>
+      <% if (payrollRecords && payrollRecords.length > 0) { %>
+        <p class="form-note">印刷ボタンは新しいタブで開きます。ブラウザの印刷機能をご利用ください。</p>
+      <% } %>
+    </section>
+  </main>
+</body>
+</html>
+

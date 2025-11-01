@@ -42,136 +42,11 @@ class SqlRepository {
       return;
     }
     this.initializingPromise = (async () => {
-      await this.ensureTables();
-      await this.ensureIndexes();
+      await this.knex.migrate.latest();
       this.initialized = true;
       this.initializingPromise = null;
     })();
     await this.initializingPromise;
-  }
-
-  async ensureTables() {
-    const { knex } = this;
-
-    const hasTenants = await knex.schema.hasTable('tenants');
-    if (!hasTenants) {
-      await knex.schema.createTable('tenants', (table) => {
-        table.increments('id').primary();
-        table.string('tenant_uid', 64).notNullable().unique();
-        table.string('name');
-        table.string('contact_email');
-        table.string('created_at').notNullable();
-      });
-    }
-
-    const hasUsers = await knex.schema.hasTable('users');
-    if (!hasUsers) {
-      await knex.schema.createTable('users', (table) => {
-        table.increments('id').primary();
-        table
-          .integer('tenant_id')
-          .unsigned()
-          .references('id')
-          .inTable('tenants')
-          .onDelete('SET NULL');
-        table.string('username').notNullable();
-        table.string('email').notNullable().unique();
-        table.string('password_hash').notNullable();
-        table.string('role', 32).notNullable();
-        table.boolean('must_change_password').notNullable().defaultTo(false);
-        table.integer('failed_attempts').notNullable().defaultTo(0);
-        table.string('locked_until');
-        table.string('first_name');
-        table.string('last_name');
-        table.string('created_at').notNullable();
-      });
-    }
-
-    const hasRoleCodes = await knex.schema.hasTable('role_codes');
-    if (!hasRoleCodes) {
-      await knex.schema.createTable('role_codes', (table) => {
-        table.increments('id').primary();
-        table
-          .integer('tenant_id')
-          .unsigned()
-          .notNullable()
-          .references('id')
-          .inTable('tenants')
-          .onDelete('CASCADE');
-        table.string('code', 64).notNullable().unique();
-        table.string('expires_at');
-        table.integer('max_uses');
-        table.integer('usage_count').notNullable().defaultTo(0);
-        table.boolean('is_disabled').notNullable().defaultTo(false);
-        table
-          .integer('created_by')
-          .unsigned()
-          .references('id')
-          .inTable('users')
-          .onDelete('SET NULL');
-        table.string('created_at').notNullable();
-      });
-    }
-
-    const hasPasswordResets = await knex.schema.hasTable('password_resets');
-    if (!hasPasswordResets) {
-      await knex.schema.createTable('password_resets', (table) => {
-        table.increments('id').primary();
-        table
-          .integer('user_id')
-          .unsigned()
-          .notNullable()
-          .references('id')
-          .inTable('users')
-          .onDelete('CASCADE');
-        table.string('token', 128).notNullable().unique();
-        table.string('expires_at').notNullable();
-        table.string('used_at');
-        table.string('created_at').notNullable();
-      });
-    }
-
-    const hasWorkSessions = await knex.schema.hasTable('work_sessions');
-    if (!hasWorkSessions) {
-      await knex.schema.createTable('work_sessions', (table) => {
-        table.increments('id').primary();
-        table
-          .integer('user_id')
-          .unsigned()
-          .notNullable()
-          .references('id')
-          .inTable('users')
-          .onDelete('CASCADE');
-        table.string('start_time').notNullable();
-        table.string('end_time');
-        table.string('created_at').notNullable();
-      });
-    }
-  }
-
-  async ensureIndexes() {
-    const { knex } = this;
-    const indexChecks = [
-      ['users', 'users_role_idx', ['role']],
-      ['users', 'users_email_idx', ['email']],
-      ['users', 'users_tenant_role_idx', ['tenant_id', 'role']],
-      ['role_codes', 'role_codes_tenant_idx', ['tenant_id']],
-      ['role_codes', 'role_codes_code_idx', ['code']],
-      ['password_resets', 'password_resets_token_idx', ['token']],
-      ['work_sessions', 'work_sessions_user_start_idx', ['user_id', 'start_time']],
-    ];
-
-    // eslint-disable-next-line no-restricted-syntax
-    for (const [table, indexName, columns] of indexChecks) {
-      // eslint-disable-next-line no-await-in-loop
-      const exists = await knex.schema.hasIndex(table, indexName);
-      if (!exists) {
-        // eslint-disable-next-line no-await-in-loop
-        await knex.schema.alterTable(table, (tbl) => {
-          tbl.index(columns, indexName);
-        });
-      }
-    }
   }
 
   async insertAndFetch(tableName, payload) {
@@ -193,16 +68,17 @@ class SqlRepository {
     await this.initialize();
   }
 
-  async createTenant({ tenant_uid, name = null, contact_email = null }) {
-    await this.ensureInitialized();
-    const payload = {
-      tenant_uid,
-      name,
-      contact_email,
-      created_at: isoNow(),
-    };
-    return this.insertAndFetch('tenants', payload);
+  async createTenant({ tenantUid, tenant_uid, name = null, contactEmail = null, contact_email = null }) {
+  await this.ensureInitialized();
+  const payload = {
+    tenant_uid: tenant_uid || tenantUid,
+    name,
+    contact_email: contact_email || contactEmail,
+    created_at: isoNow(),
+  };
+  return this.insertAndFetch('tenants', payload);
   }
+
 
   async getTenantById(id) {
     await this.ensureInitialized();
@@ -460,6 +336,66 @@ class SqlRepository {
     await this.knex('work_sessions').where({ id }).del();
   }
 
+  async createPayrollRecord({
+    tenantId,
+    employeeId,
+    uploadedBy = null,
+    originalFileName,
+    storedFilePath,
+    mimeType = null,
+    fileSize = null,
+    sentOn,
+    sentAt,
+  }) {
+    await this.ensureInitialized();
+    const payload = {
+      tenant_id: tenantId,
+      employee_id: employeeId,
+      uploaded_by: uploadedBy,
+      original_file_name: originalFileName,
+      stored_file_path: storedFilePath,
+      mime_type: mimeType,
+      file_size: fileSize,
+      sent_on: sentOn,
+      sent_at: sentAt,
+      created_at: isoNow(),
+    };
+    return this.insertAndFetch('payroll_records', payload);
+  }
+
+  async listPayrollRecordsByTenant(tenantId, limit = 200, offset = 0) {
+    await this.ensureInitialized();
+    const rows = await this.knex('payroll_records')
+      .where({ tenant_id: tenantId })
+      .orderBy('sent_at', 'desc')
+      .limit(limit)
+      .offset(offset);
+    return rows.map(normalizeRow);
+  }
+
+  async listPayrollRecordsByEmployee(employeeId) {
+    await this.ensureInitialized();
+    const rows = await this.knex('payroll_records')
+      .where({ employee_id: employeeId })
+      .orderBy('sent_at', 'desc');
+    return rows.map(normalizeRow);
+  }
+
+  async getPayrollRecordById(id) {
+    await this.ensureInitialized();
+    const row = await this.knex('payroll_records').where({ id }).first();
+    return normalizeRow(row);
+  }
+
+  async getLatestPayrollRecordForDate(employeeId, sentOn) {
+    await this.ensureInitialized();
+    const row = await this.knex('payroll_records')
+      .where({ employee_id: employeeId, sent_on: sentOn })
+      .orderBy('sent_at', 'desc')
+      .first();
+    return normalizeRow(row);
+  }
+
   async ensureDefaultPlatformAdmin() {
     await this.ensureInitialized();
     const emailInput = process.env.DEFAULT_PLATFORM_ADMIN_EMAIL || '';
@@ -525,6 +461,7 @@ class SqlRepository {
     await this.knex.transaction(async (trx) => {
       await trx('password_resets').del();
       await trx('role_codes').del();
+      await trx('payroll_records').del();
       await trx('work_sessions').del();
       await trx('users').del();
       await trx('tenants').del();

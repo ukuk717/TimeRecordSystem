@@ -1,8 +1,11 @@
 const express = require('express');
 const path = require('path');
+const fs = require('fs');
+const fsp = require('fs/promises');
 const crypto = require('crypto');
 const session = require('express-session');
 const Tokens = require('csrf');
+const multer = require('multer');
 const XlsxPopulate = require('xlsx-populate');
 
 const {
@@ -37,6 +40,11 @@ const {
   createPasswordResetToken,
   getPasswordResetToken,
   consumePasswordResetToken,
+  createPayrollRecord,
+  listPayrollRecordsByTenant,
+  listPayrollRecordsByEmployee,
+  getPayrollRecordById,
+  getLatestPayrollRecordForDate,
 } = require('./db');
 const {
   validatePassword,
@@ -56,9 +64,11 @@ const {
   formatMinutesToHM,
   getMonthRange,
   toZonedDateTime,
+  dateKey,
   diffMinutes,
   formatForDateTimeInput,
   parseDateTimeInput,
+  formatDateKey,
 } = require('./utils/time');
 
 const app = express();
@@ -139,6 +149,129 @@ const configuredSessionTtlSeconds = parsePositiveInt(
   process.env.SESSION_TTL_SECONDS,
   DEFAULT_SESSION_TTL_SECONDS
 );
+
+const PROJECT_ROOT = path.resolve(__dirname, '..');
+const PAYROLL_UPLOAD_ROOT = path.join(PROJECT_ROOT, 'data', 'payrolls');
+const PAYROLL_ALLOWED_EXTENSIONS = new Set(['.xlsx', '.xlsm', '.xls', '.pdf']);
+const PAYROLL_UPLOAD_FIELD = 'payrollFile';
+const PAYROLL_MAX_UPLOAD_BYTES = parsePositiveInt(
+  process.env.PAYROLL_MAX_UPLOAD_BYTES,
+  20 * 1024 * 1024
+);
+
+function ensureDirectorySync(dirPath) {
+  if (!fs.existsSync(dirPath)) {
+    fs.mkdirSync(dirPath, { recursive: true });
+  }
+}
+
+function buildPayrollRelativePath(tenantId, fileName) {
+  return path.join('data', 'payrolls', String(tenantId), fileName);
+}
+
+function resolvePayrollAbsolutePath(storedPath) {
+  const absolute = path.resolve(PROJECT_ROOT, storedPath);
+  const relative = path.relative(PAYROLL_UPLOAD_ROOT, absolute);
+  if (
+    relative.startsWith('..') ||
+    path.isAbsolute(relative) ||
+    relative.includes('..\\') ||
+    relative.includes('../')
+  ) {
+    throw new Error('Invalid payroll file path detected.');
+  }
+  return absolute;
+}
+
+const payrollStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    try {
+      const tenantId = req.session?.user?.tenantId;
+      if (!tenantId) {
+        cb(new Error('テナント情報を取得できませんでした。'));
+        return;
+      }
+      ensureDirectorySync(PAYROLL_UPLOAD_ROOT);
+      const tenantDirectory = path.join(PAYROLL_UPLOAD_ROOT, String(tenantId));
+      ensureDirectorySync(tenantDirectory);
+      cb(null, tenantDirectory);
+    } catch (error) {
+      cb(error);
+    }
+  },
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname || '').toLowerCase();
+    const uniqueName = `${Date.now()}-${crypto.randomUUID()}${ext}`;
+    cb(null, uniqueName);
+  },
+});
+
+function validatePayrollExtension(fileName) {
+  const ext = path.extname(fileName || '').toLowerCase();
+  return PAYROLL_ALLOWED_EXTENSIONS.has(ext);
+}
+
+const uploadPayroll = multer({
+  storage: payrollStorage,
+  limits: {
+    fileSize: PAYROLL_MAX_UPLOAD_BYTES,
+  },
+  fileFilter: (req, file, cb) => {
+    if (!validatePayrollExtension(file.originalname)) {
+      const error = new Error(
+        `許可されていないファイル形式です。使用可能な拡張子: ${Array.from(
+          PAYROLL_ALLOWED_EXTENSIONS
+        ).join(', ')}`
+      );
+      error.code = 'UNSUPPORTED_PAYROLL_FILE';
+      cb(error);
+      return;
+    }
+    cb(null, true);
+  },
+});
+
+async function removePayrollFileQuietly(filePath) {
+  if (!filePath) {
+    return;
+  }
+  try {
+    await fsp.unlink(filePath);
+  } catch (error) {
+    if (error && error.code !== 'ENOENT' && !isTestEnv) {
+      // eslint-disable-next-line no-console
+      console.warn('[payroll] ファイル削除に失敗しました', { filePath, error });
+    }
+  }
+}
+
+function formatReadableBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes < 0) {
+    return '';
+  }
+  if (bytes === 0) {
+    return '0 B';
+  }
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let value = bytes;
+  let idx = 0;
+  while (value >= 1024 && idx < units.length - 1) {
+    value /= 1024;
+    idx += 1;
+  }
+  const display = idx === 0 ? Math.round(value) : value.toFixed(1);
+  return `${display} ${units[idx]}`;
+}
+
+function applyContentDisposition(res, fileName, disposition = 'attachment') {
+  const baseName = (fileName || 'payroll').toString().replace(/\r|\n/g, '');
+  const sanitized = baseName.replace(/"/g, '');
+  const encoded = encodeURIComponent(baseName);
+  res.setHeader(
+    'Content-Disposition',
+    `${disposition}; filename="${sanitized}"; filename*=UTF-8''${encoded}`
+  );
+}
 
 function loadSessionSecret() {
   const envSecret = (process.env.SESSION_SECRET || '').trim();
@@ -818,6 +951,80 @@ app.get('/employee', requireRole(ROLES.EMPLOYEE), async (req, res) => {
   });
 });
 
+app.get('/employee/payrolls', requireRole(ROLES.EMPLOYEE), async (req, res, next) => {
+  try {
+    const userId = req.session.user.id;
+    const records = await listPayrollRecordsByEmployee(userId);
+    const decorated = records.map((record) => ({
+      id: record.id,
+      sentOnDisplay: formatDateKey(record.sent_on),
+      sentAtDisplay: formatDateTime(record.sent_at),
+      originalFileName: record.original_file_name,
+      fileSizeDisplay: formatReadableBytes(record.file_size),
+      downloadUrl: `/employee/payrolls/${record.id}/download`,
+      inlineUrl: `/employee/payrolls/${record.id}/download?disposition=inline`,
+    }));
+    res.render('employee_payrolls', {
+      payrollRecords: decorated,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get(
+  '/employee/payrolls/:recordId/download',
+  requireRole(ROLES.EMPLOYEE),
+  async (req, res, next) => {
+    try {
+      const userId = req.session.user.id;
+      const tenantId = req.session.user.tenantId;
+      const recordId = Number.parseInt(req.params.recordId, 10);
+      if (!Number.isFinite(recordId)) {
+        setFlash(req, 'error', '指定された給与明細が見つかりません。');
+        return res.redirect('/employee/payrolls');
+      }
+
+      const record = await getPayrollRecordById(recordId);
+      if (
+        !record ||
+        record.employee_id !== userId ||
+        (tenantId && record.tenant_id !== tenantId)
+      ) {
+        setFlash(req, 'error', '指定された給与明細が見つかりません。');
+        return res.redirect('/employee/payrolls');
+      }
+
+      let absolutePath;
+      try {
+        absolutePath = resolvePayrollAbsolutePath(record.stored_file_path);
+      } catch (pathError) {
+        setFlash(req, 'error', '給与明細ファイルの参照に失敗しました。');
+        return res.redirect('/employee/payrolls');
+      }
+
+      try {
+        await fsp.access(absolutePath);
+      } catch (accessError) {
+        setFlash(req, 'error', '給与明細ファイルが見つかりません。');
+        return res.redirect('/employee/payrolls');
+      }
+
+      const disposition = req.query.disposition === 'inline' ? 'inline' : 'attachment';
+      applyContentDisposition(res, record.original_file_name, disposition);
+      res.setHeader('Content-Type', record.mime_type || 'application/octet-stream');
+      if (Number.isFinite(record.file_size) && record.file_size >= 0) {
+        res.setHeader('Content-Length', record.file_size);
+      }
+      const stream = fs.createReadStream(absolutePath);
+      stream.on('error', next);
+      return stream.pipe(res);
+    } catch (error) {
+      return next(error);
+    }
+  }
+);
+
 app.post('/employee/record', requireRole(ROLES.EMPLOYEE), async (req, res) => {
   const userId = req.session.user.id;
   const openSession = await getOpenWorkSession(userId);
@@ -855,6 +1062,221 @@ app.get(
       targetMonth,
       tenantId,
     });
+  }
+);
+
+app.get(
+  '/admin/payrolls',
+  requireRole(ROLES.TENANT),
+  ensureTenantContext,
+  async (req, res, next) => {
+    try {
+      const tenantId = req.session.user.tenantId;
+      const employees = await getAllEmployeesByTenant(tenantId);
+      const employeeMap = new Map(employees.map((employee) => [employee.id, employee]));
+      const payrollRecords = await listPayrollRecordsByTenant(tenantId, 100, 0);
+      const nowZoned = toZonedDateTime(new Date().toISOString());
+      const todayKey = nowZoned ? dateKey(nowZoned) : null;
+      const sentTodayEmployeeIds = todayKey
+        ? payrollRecords
+            .filter((record) => record.sent_on === todayKey)
+            .map((record) => String(record.employee_id))
+        : [];
+
+      const decoratedRecords = payrollRecords.map((record) => {
+        const employee = employeeMap.get(record.employee_id) || null;
+        return {
+          id: record.id,
+          employeeId: record.employee_id,
+          employeeName: employee ? employee.username : `ID:${record.employee_id}`,
+          employeeEmail: employee ? employee.email : '',
+          sentOnDisplay: formatDateKey(record.sent_on),
+          sentAtDisplay: formatDateTime(record.sent_at),
+          originalFileName: record.original_file_name,
+          fileSize: record.file_size,
+          fileSizeDisplay: formatReadableBytes(record.file_size),
+          downloadUrl: `/admin/payrolls/${record.id}/download`,
+          inlineUrl: `/admin/payrolls/${record.id}/download?disposition=inline`,
+        };
+      });
+
+      const employeeOptions = [...employees]
+        .sort((a, b) => (a.username || '').localeCompare(b.username || '', 'ja'))
+        .map((employee) => ({
+          id: employee.id,
+          name: employee.username,
+          email: employee.email,
+        }));
+
+      res.render('admin_payrolls', {
+        employees: employeeOptions,
+        payrollRecords: decoratedRecords,
+        allowedExtensions: Array.from(PAYROLL_ALLOWED_EXTENSIONS),
+        maxFileSizeBytes: PAYROLL_MAX_UPLOAD_BYTES,
+        sentTodayEmployeeIds,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+function wrapPayrollUpload(req, res, next) {
+  uploadPayroll.single(PAYROLL_UPLOAD_FIELD)(req, res, (err) => {
+    if (!err) {
+      next();
+      return;
+    }
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      const maxMb = Math.max(1, Math.floor(PAYROLL_MAX_UPLOAD_BYTES / (1024 * 1024)));
+      setFlash(
+        req,
+        'error',
+        `ファイルサイズが大きすぎます。最大${maxMb}MBまでアップロード可能です。`
+      );
+      return res.redirect('/admin/payrolls');
+    }
+    if (err.code === 'UNSUPPORTED_PAYROLL_FILE') {
+      setFlash(req, 'error', err.message);
+      return res.redirect('/admin/payrolls');
+    }
+    return next(err);
+  });
+}
+
+app.post(
+  '/admin/payrolls/send',
+  requireRole(ROLES.TENANT),
+  ensureTenantContext,
+  wrapPayrollUpload,
+  async (req, res, next) => {
+    const uploadedFile = req.file || null;
+    try {
+      const tenantId = req.session.user.tenantId;
+      const adminId = req.session.user.id;
+      const employeeIdRaw = req.body.employeeId || '';
+      const forceResend = req.body.forceResend === 'true';
+
+      const employeeId = Number.parseInt(employeeIdRaw, 10);
+      if (!Number.isFinite(employeeId)) {
+        setFlash(req, 'error', '従業員を選択してください。');
+        if (uploadedFile) {
+          await removePayrollFileQuietly(uploadedFile.path);
+        }
+        return res.redirect('/admin/payrolls');
+      }
+
+      if (!uploadedFile) {
+        setFlash(req, 'error', '給与明細ファイルを選択してください。');
+        return res.redirect('/admin/payrolls');
+      }
+
+      const employee = await getUserById(employeeId);
+      if (!employee || employee.tenant_id !== tenantId || employee.role !== ROLES.EMPLOYEE) {
+        setFlash(req, 'error', '選択された従業員が見つかりません。');
+        await removePayrollFileQuietly(uploadedFile.path);
+        return res.redirect('/admin/payrolls');
+      }
+
+      if (!validatePayrollExtension(uploadedFile.originalname)) {
+        setFlash(
+          req,
+          'error',
+          `許可されていないファイル形式です。使用可能な拡張子: ${Array.from(
+            PAYROLL_ALLOWED_EXTENSIONS
+          ).join(', ')}`
+        );
+        await removePayrollFileQuietly(uploadedFile.path);
+        return res.redirect('/admin/payrolls');
+      }
+
+      const sentAtIso = new Date().toISOString();
+      const zonedNow = toZonedDateTime(sentAtIso);
+      const sentOnKey = zonedNow ? dateKey(zonedNow) : sentAtIso.slice(0, 10);
+
+      const latestRecordToday = await getLatestPayrollRecordForDate(employee.id, sentOnKey);
+      if (latestRecordToday && !forceResend) {
+        await removePayrollFileQuietly(uploadedFile.path);
+        setFlash(
+          req,
+          'error',
+          '本日既に給与明細を送信済みです。確認ダイアログで再送信を明示的に承認してください。'
+        );
+        return res.redirect('/admin/payrolls');
+      }
+
+      const storedRelativePath = buildPayrollRelativePath(tenantId, uploadedFile.filename);
+
+      await createPayrollRecord({
+        tenantId,
+        employeeId: employee.id,
+        uploadedBy: adminId,
+        originalFileName: uploadedFile.originalname,
+        storedFilePath: storedRelativePath,
+        mimeType: uploadedFile.mimetype,
+        fileSize: uploadedFile.size,
+        sentOn: sentOnKey,
+        sentAt: sentAtIso,
+      });
+
+      setFlash(req, 'success', '給与明細を送信しました。続けて送信する場合は同じフォームをご利用ください。');
+      return res.redirect('/admin/payrolls');
+    } catch (error) {
+      if (uploadedFile) {
+        await removePayrollFileQuietly(uploadedFile.path);
+      }
+      return next(error);
+    }
+  }
+);
+
+app.get(
+  '/admin/payrolls/:recordId/download',
+  requireRole(ROLES.TENANT),
+  ensureTenantContext,
+  async (req, res, next) => {
+    try {
+      const tenantId = req.session.user.tenantId;
+      const recordId = Number.parseInt(req.params.recordId, 10);
+      if (!Number.isFinite(recordId)) {
+        setFlash(req, 'error', '指定された給与明細が見つかりません。');
+        return res.redirect('/admin/payrolls');
+      }
+
+      const record = await getPayrollRecordById(recordId);
+      if (!record || record.tenant_id !== tenantId) {
+        setFlash(req, 'error', '指定された給与明細が見つかりません。');
+        return res.redirect('/admin/payrolls');
+      }
+
+      let absolutePath;
+      try {
+        absolutePath = resolvePayrollAbsolutePath(record.stored_file_path);
+      } catch (pathError) {
+        setFlash(req, 'error', '給与明細ファイルの参照に失敗しました。');
+        return res.redirect('/admin/payrolls');
+      }
+
+      try {
+        await fsp.access(absolutePath);
+      } catch (accessError) {
+        setFlash(req, 'error', '給与明細ファイルが見つかりません。');
+        return res.redirect('/admin/payrolls');
+      }
+
+      const disposition = req.query.disposition === 'inline' ? 'inline' : 'attachment';
+      applyContentDisposition(res, record.original_file_name, disposition);
+      res.setHeader('Content-Type', record.mime_type || 'application/octet-stream');
+      if (Number.isFinite(record.file_size) && record.file_size >= 0) {
+        res.setHeader('Content-Length', record.file_size);
+      }
+
+      const stream = fs.createReadStream(absolutePath);
+      stream.on('error', next);
+      return stream.pipe(res);
+    } catch (error) {
+      return next(error);
+    }
   }
 );
 

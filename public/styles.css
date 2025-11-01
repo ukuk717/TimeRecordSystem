@@ -113,6 +113,19 @@ body {
   color: #666666;
 }
 
+.form-actions {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.form-error {
+  color: var(--danger);
+  font-weight: 600;
+  margin: 0;
+}
+
 .btn {
   border: none;
   border-radius: 24px;
@@ -138,6 +151,18 @@ body {
   background: transparent;
   color: var(--primary);
   padding: 0.4rem 0.6rem;
+}
+
+.file-input {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.payroll-file-name {
+  font-size: 0.9rem;
+  color: #555555;
 }
 
 .btn:hover {
@@ -327,6 +352,43 @@ body {
 
 .inline-form {
   display: inline;
+}
+
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  z-index: 1000;
+}
+
+.dialog-backdrop[hidden] {
+  display: none !important;
+}
+
+.dialog {
+  background: #ffffff;
+  border-radius: 12px;
+  padding: 1.5rem;
+  max-width: 420px;
+  width: 100%;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.18);
+}
+
+.dialog h3 {
+  margin-top: 0;
+  margin-bottom: 0.75rem;
+}
+
+.dialog-actions {
+  margin-top: 1.5rem;
+  display: flex;
+  gap: 0.75rem;
+  justify-content: flex-end;
+  flex-wrap: wrap;
 }
 
 @media (max-width: 600px) {
