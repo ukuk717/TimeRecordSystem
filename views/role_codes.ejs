@@ -36,7 +36,17 @@
             <dt>共有用URL</dt>
             <dd>
               <% if (generated.shareUrl) { %>
-                <a href="<%= generated.shareUrl %>" class="link" target="_blank" rel="noopener noreferrer"><%= generated.shareUrl %></a>
+                <div class="share-actions">
+                  <a href="<%= generated.shareUrl %>" class="link" target="_blank" rel="noopener noreferrer"><%= generated.shareUrl %></a>
+                  <button
+                    type="button"
+                    class="btn secondary share-button"
+                    data-share-url="<%= generated.shareUrl %>"
+                    data-role-code="<%= generated.code %>"
+                  >
+                    共有
+                  </button>
+                </div>
               <% } else { %>
                 発行できませんでした
               <% } %>
@@ -105,7 +115,17 @@
                   <td><code><%= code.code %></code></td>
                   <td>
                     <% if (code.shareUrl) { %>
-                      <a href="<%= code.shareUrl %>" class="link" target="_blank" rel="noopener noreferrer">リンクを開く</a>
+                      <div class="table-actions share-inline">
+                        <a href="<%= code.shareUrl %>" class="link" target="_blank" rel="noopener noreferrer">リンクを開く</a>
+                        <button
+                          type="button"
+                          class="btn secondary share-button"
+                          data-share-url="<%= code.shareUrl %>"
+                          data-role-code="<%= code.code %>"
+                        >
+                          共有
+                        </button>
+                      </div>
                     <% } else { %>
                       <span class="muted">未設定</span>
                     <% } %>
@@ -141,5 +161,165 @@
       </div>
     </section>
   </main>
+  <div class="dialog-backdrop" id="share-fallback" hidden>
+    <div class="dialog">
+      <h3>共有URLのコピー</h3>
+      <p class="share-dialog-text">以下のボタンを押すとURLをクリップボードにコピーできます。</p>
+      <input type="text" class="share-dialog-input" data-share-url-input readonly>
+      <p class="share-dialog-status" data-share-status></p>
+      <div class="dialog-actions">
+        <button type="button" class="btn secondary" data-share-copy>コピー</button>
+        <button type="button" class="btn link" data-share-close>閉じる</button>
+      </div>
+    </div>
+  </div>
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      const shareButtons = document.querySelectorAll('.share-button');
+      if (!shareButtons.length) {
+        return;
+      }
+
+      const shareTitle = '勤怠管理システム ロールコード共有';
+
+      const fallbackDialog = (() => {
+        const backdrop = document.getElementById('share-fallback');
+        if (!backdrop) {
+          return null;
+        }
+        const input = backdrop.querySelector('[data-share-url-input]');
+        const status = backdrop.querySelector('[data-share-status]');
+        const copyButton = backdrop.querySelector('[data-share-copy]');
+        const closeButton = backdrop.querySelector('[data-share-close]');
+
+        const setStatus = (message, type) => {
+          if (!status) {
+            return;
+          }
+          status.textContent = message || '';
+          status.classList.remove('success', 'error');
+          if (type === 'success') {
+            status.classList.add('success');
+          } else if (type === 'error') {
+            status.classList.add('error');
+          }
+        };
+
+        const hide = () => {
+          backdrop.setAttribute('hidden', '');
+          if (input) {
+            input.value = '';
+          }
+          setStatus('', null);
+        };
+
+        const copyToClipboard = async () => {
+          if (!input) {
+            return;
+          }
+          input.select();
+          input.setSelectionRange(0, input.value.length);
+          try {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+              await navigator.clipboard.writeText(input.value);
+            } else if (document.execCommand) {
+              const succeeded = document.execCommand('copy');
+              if (!succeeded) {
+                throw new Error('copy command failed');
+              }
+            } else {
+              throw new Error('no clipboard API');
+            }
+            setStatus('コピーしました。', 'success');
+          } catch (error) {
+            setStatus('コピーに失敗しました。', 'error');
+          }
+        };
+
+        if (copyButton) {
+          copyButton.addEventListener('click', copyToClipboard);
+        }
+        if (closeButton) {
+          closeButton.addEventListener('click', hide);
+        }
+        backdrop.addEventListener('click', (event) => {
+          if (event.target === backdrop) {
+            hide();
+          }
+        });
+
+        return {
+          show: (url) => {
+            if (!input) {
+              return;
+            }
+            input.value = url;
+            setStatus('', null);
+            backdrop.removeAttribute('hidden');
+            window.requestAnimationFrame(() => {
+              input.focus();
+              input.select();
+            });
+          },
+          hide,
+        };
+      })();
+
+      const fallbackShare = async (url) => {
+        if (!url) {
+          return;
+        }
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          try {
+            await navigator.clipboard.writeText(url);
+            window.alert('共有URLをクリップボードにコピーしました。');
+            return;
+          } catch (error) {
+            // 続行して手動コピーUIを表示
+          }
+        }
+        if (fallbackDialog) {
+          fallbackDialog.show(url);
+          return;
+        }
+        window.prompt('以下のURLをコピーして共有してください:', url);
+      };
+
+      const handleShare = async (event) => {
+        const button = event.currentTarget;
+        const shareUrl = button.getAttribute('data-share-url');
+        const roleCode = button.getAttribute('data-role-code') || '';
+        if (!shareUrl) {
+          return;
+        }
+
+        const shareData = {
+          title: shareTitle,
+          url: shareUrl,
+        };
+        if (roleCode) {
+          shareData.text = `ロールコード: ${roleCode}`;
+        }
+
+        if (navigator.share) {
+          try {
+            await navigator.share(shareData);
+            return;
+          } catch (error) {
+            if (error && error.name === 'AbortError') {
+              return;
+            }
+            // fall through to clipboard prompt
+          }
+        }
+
+        await fallbackShare(shareUrl);
+      };
+
+      shareButtons.forEach((button) => {
+        button.addEventListener('click', handleShare);
+      });
+    });
+  </script>
 </body>
 </html>

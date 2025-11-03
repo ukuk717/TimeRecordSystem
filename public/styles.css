@@ -266,6 +266,49 @@ body {
   flex-wrap: wrap;
 }
 
+.table-actions.share-inline {
+  align-items: center;
+}
+
+.share-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.share-actions .link {
+  word-break: break-all;
+}
+
+.share-actions .btn {
+  padding: 0.45rem 1rem;
+}
+
+.share-dialog-input {
+  width: 100%;
+  margin-top: 0.75rem;
+  padding: 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 1rem;
+}
+
+.share-dialog-status {
+  min-height: 1.1rem;
+  margin-top: 0.5rem;
+  font-size: 0.9rem;
+  color: #555555;
+}
+
+.share-dialog-status.success {
+  color: var(--success);
+}
+
+.share-dialog-status.error {
+  color: var(--danger);
+}
+
 .btn.danger {
   background: #fde8e2;
   color: var(--danger);
@@ -495,6 +538,15 @@ body {
 
   .table-actions .btn {
     width: 100%;
+  }
+
+  .table-actions.share-inline {
+    flex-direction: row;
+    align-items: center;
+  }
+
+  .table-actions.share-inline .btn {
+    width: auto;
   }
 
   .table-responsive {
