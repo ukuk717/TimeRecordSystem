@@ -44,16 +44,16 @@
             <% if (!payrollRecords || payrollRecords.length === 0) { %>
               <tr><td colspan="4">給与明細はまだ届いていません。送信されるとここに表示されます。</td></tr>
             <% } else { %>
-              <% payrollRecords.forEach(function(record) { %>
-                <tr>
-                  <td><%= record.sentAtDisplay %></td>
-                  <td><%= record.originalFileName %></td>
-                  <td><%= record.fileSizeDisplay || '-' %></td>
-                  <td>
-                    <a class="btn secondary" href="<%= record.downloadUrl %>">ダウンロード</a>
-                    <a class="btn link" href="<%= record.inlineUrl %>" target="_blank" rel="noopener">印刷</a>
-                  </td>
-                </tr>
+            <% payrollRecords.forEach(function(record) { %>
+              <tr>
+                <td class="table-text-nowrap"><%= record.sentAtDisplay %></td>
+                <td class="table-col-file table-text-nowrap"><%= record.originalFileName %></td>
+                <td class="table-text-nowrap"><%= record.fileSizeDisplay || '-' %></td>
+                <td>
+                  <a class="btn secondary" href="<%= record.downloadUrl %>">ダウンロード</a>
+                  <a class="btn link" href="<%= record.inlineUrl %>" target="_blank" rel="noopener">印刷</a>
+                </td>
+              </tr>
               <% }); %>
             <% } %>
           </tbody>
