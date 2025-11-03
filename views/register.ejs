@@ -19,11 +19,14 @@
       <p class="form-note">
         事前にテナント管理者から発行されたロールコードが必要です。ロールコードは半角英数字（A-Z, 0-9）のみ入力可能です。
       </p>
+      <% if (roleCodeValue) { %>
+        <p class="form-note">共有リンクからアクセスしたため、ロールコードが自動入力されています。</p>
+      <% } %>
       <form method="post" action="/register" class="form">
         <input type="hidden" name="_csrf" value="<%= csrfToken %>">
         <label class="form-field">
           <span>ロールコード</span>
-          <input type="text" name="roleCode" maxlength="32" required autocomplete="off" pattern="[A-Za-z0-9]+" title="英数字のみ利用できます">
+          <input type="text" name="roleCode" maxlength="32" required autocomplete="off" pattern="[A-Za-z0-9]+" title="英数字のみ利用できます" value="<%= roleCodeValue || '' %>">
         </label>
         <div class="form-field form-field-inline">
           <label>

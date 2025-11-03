@@ -538,6 +538,15 @@ function generateRoleCodeValue(length = ROLE_CODE_LENGTH) {
   return chars.join('');
 }
 
+function buildRoleCodeShareUrl(codeValue) {
+  if (!codeValue) {
+    return '';
+  }
+  const registerUrl = new URL('/register', appBaseUrl);
+  registerUrl.searchParams.set('roleCode', codeValue);
+  return registerUrl.toString();
+}
+
 function hashPasswordResetToken(token) {
   return crypto.createHash('sha256').update(String(token || '')).digest('hex');
 }
@@ -750,7 +759,18 @@ app.get('/register', (req, res) => {
   if (req.session.user) {
     return res.redirect('/');
   }
-  return res.render('register', { minPasswordLength: PASSWORD_MIN_LENGTH });
+  let queryValue = '';
+  if (typeof req.query.roleCode === 'string') {
+    queryValue = req.query.roleCode;
+  } else if (Array.isArray(req.query.roleCode) && req.query.roleCode.length > 0) {
+    [queryValue] = req.query.roleCode;
+  }
+  const prefilledRoleCode = (queryValue || '').trim().toUpperCase();
+  const sanitizedRoleCode = /^[A-Z0-9]+$/.test(prefilledRoleCode) ? prefilledRoleCode : '';
+  return res.render('register', {
+    minPasswordLength: PASSWORD_MIN_LENGTH,
+    roleCodeValue: sanitizedRoleCode,
+  });
 });
 
 app.post('/register', async (req, res) => {
@@ -1379,6 +1399,7 @@ app.get(
         status,
         expiresAt: expiresAtMs,
         expiresDisplay: formatDisplayDateTime(code.expires_at),
+        shareUrl: buildRoleCodeShareUrl(code.code),
       };
     });
 
@@ -1388,6 +1409,7 @@ app.get(
       generated = {
         ...generated,
         expiresDisplay: generated.expiresDisplay || formatDisplayDateTime(generated.expiresAt),
+        shareUrl: generated.shareUrl || buildRoleCodeShareUrl(generated.code),
       };
     }
 
@@ -1447,6 +1469,7 @@ app.post(
       expiresAt,
       expiresDisplay: formatDisplayDateTime(expiresAt),
       maxUses,
+      shareUrl: buildRoleCodeShareUrl(codeValue),
     };
 
     setFlash(req, 'success', 'ロールコードを発行しました。');

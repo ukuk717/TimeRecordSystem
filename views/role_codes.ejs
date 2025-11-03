@@ -33,6 +33,16 @@
             <dd><code class="code-large"><%= generated.code %></code></dd>
           </div>
           <div>
+            <dt>共有用URL</dt>
+            <dd>
+              <% if (generated.shareUrl) { %>
+                <a href="<%= generated.shareUrl %>" class="link" target="_blank" rel="noopener noreferrer"><%= generated.shareUrl %></a>
+              <% } else { %>
+                発行できませんでした
+              <% } %>
+            </dd>
+          </div>
+          <div>
             <dt>有効期限</dt>
             <dd>
               <% if (generated.expiresDisplay) { %>
@@ -47,7 +57,7 @@
             <dd><%= Number.isInteger(generated.maxUses) ? generated.maxUses : '無制限' %></dd>
           </div>
         </dl>
-        <p class="form-note">従業員にコードを共有し、期限内・上限内に登録してもらってください。</p>
+        <p class="form-note">従業員にはコードまたは共有用URLを共有し、期限内・上限内に登録してもらってください。</p>
       </section>
     <% } %>
 
@@ -78,6 +88,7 @@
           <thead>
             <tr>
               <th>コード</th>
+              <th>共有URL</th>
               <th>状態</th>
               <th>有効期限</th>
               <th>使用状況</th>
@@ -86,12 +97,19 @@
           </thead>
           <tbody>
             <% if (!codes || codes.length === 0) { %>
-              <tr><td colspan="5">まだロールコードが発行されていません。</td></tr>
+              <tr><td colspan="6">まだロールコードが発行されていません。</td></tr>
             <% } else { %>
               <% codes.forEach(function(code) { %>
                 <% const limitDisplay = Number.isInteger(code.max_uses) ? code.max_uses : '無制限'; %>
                 <tr>
                   <td><code><%= code.code %></code></td>
+                  <td>
+                    <% if (code.shareUrl) { %>
+                      <a href="<%= code.shareUrl %>" class="link" target="_blank" rel="noopener noreferrer">リンクを開く</a>
+                    <% } else { %>
+                      <span class="muted">未設定</span>
+                    <% } %>
+                  </td>
                   <td class="status-cell status-<%= code.status %>">
                     <% if (code.status === 'active') { %>
                       有効
