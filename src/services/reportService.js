@@ -1,4 +1,7 @@
-const { getAllWorkSessionsByUser, getAllEmployeesByTenant } = require('../db');
+const {
+  getWorkSessionsByUserOverlapping,
+  getAllEmployeesByTenant,
+} = require('../db');
 const {
   toZonedDateTime,
   dateKey,
@@ -7,6 +10,7 @@ const {
   formatMinutesToHM,
   getMonthRange,
   getRecentRange,
+  toISO,
 } = require('../utils/time');
 
 function accumulateMinutesPerDay(map, start, end) {
@@ -54,17 +58,25 @@ function splitSessionByDay(start, end) {
 }
 
 async function getUserDailySummary(userId, days = 30) {
-  const sessions = await getAllWorkSessionsByUser(userId);
-  const { start: boundary } = getRecentRange(days);
+  const { start: boundaryStart, end: boundaryEnd } = getRecentRange(days);
+  const sessions = await getWorkSessionsByUserOverlapping(
+    userId,
+    toISO(boundaryStart),
+    toISO(boundaryEnd)
+  );
   const minutesMap = new Map();
 
   sessions.forEach((session) => {
     const start = toZonedDateTime(session.start_time);
     const end = session.end_time ? toZonedDateTime(session.end_time) : null;
     if (!start || !end) return;
-    if (end <= boundary) return;
-    const effectiveStart = start < boundary ? boundary : start;
-    accumulateMinutesPerDay(minutesMap, effectiveStart, end);
+    if (end <= boundaryStart) return;
+    const effectiveStart = start < boundaryStart ? boundaryStart : start;
+    const effectiveEnd = end > boundaryEnd ? boundaryEnd : end;
+    if (effectiveEnd <= effectiveStart) {
+      return;
+    }
+    accumulateMinutesPerDay(minutesMap, effectiveStart, effectiveEnd);
   });
 
   const results = Array.from(minutesMap.entries())
@@ -80,8 +92,12 @@ async function getUserDailySummary(userId, days = 30) {
 }
 
 async function getUserMonthlySummary(userId, year, month) {
-  const sessions = await getAllWorkSessionsByUser(userId);
   const { start, end } = getMonthRange(year, month);
+  const sessions = await getWorkSessionsByUserOverlapping(
+    userId,
+    toISO(start),
+    toISO(end)
+  );
   const minutesMap = new Map();
 
   sessions.forEach((session) => {
@@ -91,6 +107,9 @@ async function getUserMonthlySummary(userId, year, month) {
     if (endDt <= start || startDt >= end) return;
     const boundedStart = startDt < start ? start : startDt;
     const boundedEnd = endDt > end ? end : endDt;
+    if (boundedEnd <= boundedStart) {
+      return;
+    }
     accumulateMinutesPerDay(minutesMap, boundedStart, boundedEnd);
   });
 
@@ -109,8 +128,12 @@ async function getUserMonthlySummary(userId, year, month) {
 }
 
 async function getUserMonthlyDetailedSessions(userId, year, month) {
-  const sessions = await getAllWorkSessionsByUser(userId);
   const { start, end } = getMonthRange(year, month);
+  const sessions = await getWorkSessionsByUserOverlapping(
+    userId,
+    toISO(start),
+    toISO(end)
+  );
   const grouped = new Map();
 
   sessions.forEach((session) => {
@@ -120,6 +143,9 @@ async function getUserMonthlyDetailedSessions(userId, year, month) {
     if (endDt <= start || startDt >= end) return;
     const boundedStart = startDt < start ? start : startDt;
     const boundedEnd = endDt > end ? end : endDt;
+    if (boundedEnd <= boundedStart) {
+      return;
+    }
     const segments = splitSessionByDay(boundedStart, boundedEnd);
     segments.forEach(({ start: segStart, end: segEnd }) => {
       const key = dateKey(segStart);

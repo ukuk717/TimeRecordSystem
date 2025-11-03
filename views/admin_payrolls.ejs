@@ -86,44 +86,46 @@
 
     <section class="card">
       <h2>送信履歴</h2>
-      <table class="table">
-        <thead>
-          <tr>
-            <th>送信日</th>
-            <th>送信時刻</th>
-            <th>従業員</th>
-            <th>ファイル名</th>
-            <th>サイズ</th>
-            <th>操作</th>
-          </tr>
-        </thead>
-        <tbody>
-          <% if (!payrollRecords || payrollRecords.length === 0) { %>
-            <tr><td colspan="6">まだ送信履歴がありません。</td></tr>
-          <% } else { %>
-            <% payrollRecords.forEach(function(record) { %>
-              <tr>
-                <td><%= record.sentOnDisplay %></td>
-                <td><%= record.sentAtDisplay %></td>
-                <td>
-                  <div class="user-cell">
-                    <span class="user-name"><%= record.employeeName %></span>
-                    <% if (record.employeeEmail) { %>
-                      <span class="user-email"><%= record.employeeEmail %></span>
-                    <% } %>
-                  </div>
-                </td>
-                <td><%= record.originalFileName %></td>
-                <td><%= record.fileSizeDisplay || '-' %></td>
-                <td>
-                  <a class="btn secondary" href="<%= record.downloadUrl %>">ダウンロード</a>
-                  <a class="btn link" href="<%= record.inlineUrl %>" target="_blank" rel="noopener">プレビュー</a>
-                </td>
-              </tr>
-            <% }); %>
-          <% } %>
-        </tbody>
-      </table>
+      <div class="table-responsive">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>送信日</th>
+              <th>送信時刻</th>
+              <th>従業員</th>
+              <th>ファイル名</th>
+              <th>サイズ</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <% if (!payrollRecords || payrollRecords.length === 0) { %>
+              <tr><td colspan="6">まだ送信履歴がありません。</td></tr>
+            <% } else { %>
+              <% payrollRecords.forEach(function(record) { %>
+                <tr>
+                  <td><%= record.sentOnDisplay %></td>
+                  <td><%= record.sentAtDisplay %></td>
+                  <td>
+                    <div class="user-cell">
+                      <span class="user-name"><%= record.employeeName %></span>
+                      <% if (record.employeeEmail) { %>
+                        <span class="user-email"><%= record.employeeEmail %></span>
+                      <% } %>
+                    </div>
+                  </td>
+                  <td><%= record.originalFileName %></td>
+                  <td><%= record.fileSizeDisplay || '-' %></td>
+                  <td>
+                    <a class="btn secondary" href="<%= record.downloadUrl %>">ダウンロード</a>
+                    <a class="btn link" href="<%= record.inlineUrl %>" target="_blank" rel="noopener">プレビュー</a>
+                  </td>
+                </tr>
+              <% }); %>
+            <% } %>
+          </tbody>
+        </table>
+      </div>
     </section>
   </main>
 

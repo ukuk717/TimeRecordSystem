@@ -2,9 +2,9 @@ const request = require('supertest');
 const app = require('../src/app');
 const { deleteAllData, ensureDefaultPlatformAdmin } = require('../src/db');
 
-beforeEach(() => {
-  deleteAllData();
-  ensureDefaultPlatformAdmin();
+beforeEach(async () => {
+  await deleteAllData();
+  await ensureDefaultPlatformAdmin();
 });
 
 describe('Public pages', () => {

@@ -196,6 +196,12 @@ body {
   font-size: 0.95rem;
 }
 
+.table-responsive {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
 .table th,
 .table td {
   border-bottom: 1px solid var(--border);
@@ -391,14 +397,85 @@ body {
   flex-wrap: wrap;
 }
 
-@media (max-width: 600px) {
+@media (max-width: 768px) {
   .app-header {
     flex-direction: column;
     align-items: flex-start;
   }
 
+  .app-header nav {
+    width: 100%;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.4rem;
+  }
+
+  .app-header nav a,
+  .app-header nav .btn {
+    width: 100%;
+    text-align: center;
+  }
+
+  .container {
+    margin: 0;
+    padding: 0.75rem;
+    gap: 1rem;
+  }
+
+  .card {
+    padding: 1.25rem;
+  }
+
+  .form-inline {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
   .form-inline label {
     width: 100%;
+  }
+
+  .form-inline label,
+  .form-inline .form-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+
+  .form-inline input,
+  .form-inline select {
+    width: 100%;
+  }
+
+  .form-inline .btn {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .form-field-inline {
+    flex-direction: column;
+  }
+
+  .form-field-inline label {
+    width: 100%;
+  }
+
+  .form-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .form-actions .btn {
+    width: 100%;
+  }
+
+  .table-responsive {
+    margin: 0 -0.5rem;
+    padding: 0 0.5rem 0.75rem;
+  }
+
+  .table-responsive .table {
+    min-width: 600px;
   }
 
   .table th,

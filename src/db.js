@@ -53,4 +53,7 @@ module.exports = {
   getLatestPayrollRecordForDate: bind('getLatestPayrollRecordForDate'),
   ensureDefaultPlatformAdmin: bind('ensureDefaultPlatformAdmin'),
   deleteAllData: bind('deleteAllData'),
+  deleteTenantById: bind('deleteTenantById'),
+  getWorkSessionsByUserOverlapping: bind('getWorkSessionsByUserOverlapping'),
+  listRecentWorkSessionsByUser: bind('listRecentWorkSessionsByUser'),
 };

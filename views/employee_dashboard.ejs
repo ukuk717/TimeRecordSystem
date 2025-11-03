@@ -53,52 +53,56 @@
 
     <section class="card">
       <h2>最近30日間の勤務時間（日別）</h2>
-      <table class="table">
-        <thead>
-          <tr>
-            <th>日付</th>
-            <th>勤務時間</th>
-          </tr>
-        </thead>
-        <tbody>
-          <% if (dailySummary.length === 0) { %>
-            <tr><td colspan="2">記録がありません。</td></tr>
-          <% } else { %>
-            <% dailySummary.forEach(function(row) { %>
-              <tr>
-                <td><%= row.date %></td>
-                <td><%= row.formatted %></td>
-              </tr>
-            <% }); %>
-          <% } %>
-        </tbody>
-      </table>
+      <div class="table-responsive">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>日付</th>
+              <th>勤務時間</th>
+            </tr>
+          </thead>
+          <tbody>
+            <% if (dailySummary.length === 0) { %>
+              <tr><td colspan="2">記録がありません。</td></tr>
+            <% } else { %>
+              <% dailySummary.forEach(function(row) { %>
+                <tr>
+                  <td><%= row.date %></td>
+                  <td><%= row.formatted %></td>
+                </tr>
+              <% }); %>
+            <% } %>
+          </tbody>
+        </table>
+      </div>
     </section>
 
     <section class="card">
       <h2>最近の打刻履歴</h2>
-      <table class="table">
-        <thead>
-          <tr>
-            <th>開始</th>
-            <th>終了</th>
-            <th>勤務時間</th>
-          </tr>
-        </thead>
-        <tbody>
-          <% if (sessionHistory.length === 0) { %>
-            <tr><td colspan="3">履歴がありません。</td></tr>
-          <% } else { %>
-            <% sessionHistory.forEach(function(s) { %>
-              <tr>
-                <td><%= s.startFormatted %></td>
-                <td><%= s.endFormatted %></td>
-                <td><%= s.formattedMinutes %></td>
-              </tr>
-            <% }); %>
-          <% } %>
-        </tbody>
-      </table>
+      <div class="table-responsive">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>開始</th>
+              <th>終了</th>
+              <th>勤務時間</th>
+            </tr>
+          </thead>
+          <tbody>
+            <% if (sessionHistory.length === 0) { %>
+              <tr><td colspan="3">履歴がありません。</td></tr>
+            <% } else { %>
+              <% sessionHistory.forEach(function(s) { %>
+                <tr>
+                  <td><%= s.startFormatted %></td>
+                  <td><%= s.endFormatted %></td>
+                  <td><%= s.formattedMinutes %></td>
+                </tr>
+              <% }); %>
+            <% } %>
+          </tbody>
+        </table>
+      </div>
     </section>
   </main>
 </body>

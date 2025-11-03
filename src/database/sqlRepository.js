@@ -49,16 +49,17 @@ class SqlRepository {
     await this.initializingPromise;
   }
 
-  async insertAndFetch(tableName, payload) {
-    const client = this.knex.client.config.client;
+  async insertAndFetch(tableName, payload, executor = this.knex) {
+    const db = executor || this.knex;
+    const client = db.client.config.client;
     if (client === 'pg' || client === 'oracledb' || client === 'mssql') {
-      const [row] = await this.knex(tableName).insert(payload).returning('*');
+      const [row] = await db(tableName).insert(payload).returning('*');
       return normalizeRow(row);
     }
     if (client === 'mysql' || client === 'mysql2' || client === 'sqlite3') {
-      const insertedIds = await this.knex(tableName).insert(payload);
+      const insertedIds = await db(tableName).insert(payload);
       const id = Array.isArray(insertedIds) ? insertedIds[0] : insertedIds;
-      const row = await this.knex(tableName).where({ id }).first();
+      const row = await db(tableName).where({ id }).first();
       return normalizeRow(row);
     }
     throw new Error(`Unsupported client "${client}" for insert.`);
@@ -69,14 +70,14 @@ class SqlRepository {
   }
 
   async createTenant({ tenantUid, tenant_uid, name = null, contactEmail = null, contact_email = null }) {
-  await this.ensureInitialized();
-  const payload = {
-    tenant_uid: tenant_uid || tenantUid,
-    name,
-    contact_email: contact_email || contactEmail,
-    created_at: isoNow(),
-  };
-  return this.insertAndFetch('tenants', payload);
+    await this.ensureInitialized();
+    const payload = {
+      tenant_uid: tenant_uid || tenantUid,
+      name,
+      contact_email: contact_email || contactEmail,
+      created_at: isoNow(),
+    };
+    return this.insertAndFetch('tenants', payload);
   }
 
 
@@ -236,11 +237,20 @@ class SqlRepository {
     await this.knex('role_codes').where({ id }).update({ is_disabled: true });
   }
 
-  async createPasswordResetToken({ userId, token, expiresAt }) {
+  async createPasswordResetToken({ userId, tokenHash, expiresAt }) {
     await this.ensureInitialized();
+    if (!userId) {
+      throw new Error('userId must be provided.');
+    }
+    if (!tokenHash) {
+      throw new Error('tokenHash must be provided.');
+    }
+    if (!expiresAt) {
+      throw new Error('expiresAt must be provided.');
+    }
     const payload = {
       user_id: userId,
-      token,
+      token: tokenHash,
       expires_at: expiresAt,
       used_at: null,
       created_at: isoNow(),
@@ -248,10 +258,29 @@ class SqlRepository {
     return this.insertAndFetch('password_resets', payload);
   }
 
-  async getPasswordResetToken(token) {
+  async getPasswordResetToken({ tokenHash, fallbackToken = null }) {
     await this.ensureInitialized();
-    const row = await this.knex('password_resets').where({ token }).first();
-    return normalizeRow(row);
+    const row = await this.knex('password_resets')
+      .where({ token: tokenHash })
+      .andWhere({ used_at: null })
+      .first();
+    if (row) {
+      return normalizeRow(row);
+    }
+    if (fallbackToken) {
+      const legacyRow = await this.knex('password_resets')
+        .where({ token: fallbackToken })
+        .andWhere({ used_at: null })
+        .first();
+      if (legacyRow && tokenHash) {
+        await this.knex('password_resets')
+          .where({ id: legacyRow.id })
+          .update({ token: tokenHash });
+        legacyRow.token = tokenHash;
+      }
+      return normalizeRow(legacyRow);
+    }
+    return null;
   }
 
   async consumePasswordResetToken(id) {
@@ -466,6 +495,38 @@ class SqlRepository {
       await trx('users').del();
       await trx('tenants').del();
     });
+  }
+
+  async deleteTenantById(id) {
+    await this.ensureInitialized();
+    await this.knex('tenants').where({ id }).del();
+  }
+
+  async getWorkSessionsByUserOverlapping(userId, rangeStartIso, rangeEndIso) {
+    await this.ensureInitialized();
+    if (!rangeStartIso) {
+      throw new Error('rangeStartIso must be provided.');
+    }
+    if (!rangeEndIso) {
+      throw new Error('rangeEndIso must be provided.');
+    }
+    const rows = await this.knex('work_sessions')
+      .where({ user_id: userId })
+      .andWhere('start_time', '<', rangeEndIso)
+      .andWhere((qb) => {
+        qb.where('end_time', '>', rangeStartIso).orWhereNull('end_time');
+      })
+      .orderBy('start_time', 'asc');
+    return rows.map(normalizeRow);
+  }
+
+  async listRecentWorkSessionsByUser(userId, limit = 10) {
+    await this.ensureInitialized();
+    const rows = await this.knex('work_sessions')
+      .where({ user_id: userId })
+      .orderBy('start_time', 'desc')
+      .limit(limit);
+    return rows.map(normalizeRow);
   }
 }
 

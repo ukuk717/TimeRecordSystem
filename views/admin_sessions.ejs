@@ -73,64 +73,66 @@
 
     <section class="card">
       <h2>勤務記録一覧</h2>
-      <table class="table session-table">
-        <thead>
-          <tr>
-            <th>開始</th>
-            <th>終了</th>
-            <th>合計</th>
-            <th>操作</th>
-          </tr>
-        </thead>
-        <tbody>
-          <% if (sessions.length === 0) { %>
-            <tr><td colspan="4">対象期間の勤務記録がありません。</td></tr>
-          <% } else { %>
-            <% sessions.forEach(function(session) { %>
-              <tr>
-                <td>
-                  <input
-                    type="datetime-local"
-                    name="startTime"
-                    value="<%= session.startInput %>"
-                    required
-                    form="session-form-<%= session.id %>"
-                  >
-                </td>
-                <td>
-                  <input
-                    type="datetime-local"
-                    name="endTime"
-                    value="<%= session.endInput %>"
-                    form="session-form-<%= session.id %>"
-                  >
-                </td>
-                <td><%= session.formattedMinutes %></td>
-                <td>
-                  <div class="session-actions">
-                    <button
-                      type="submit"
-                      class="btn primary"
+      <div class="table-responsive">
+        <table class="table session-table">
+          <thead>
+            <tr>
+              <th>開始</th>
+              <th>終了</th>
+              <th>合計</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <% if (sessions.length === 0) { %>
+              <tr><td colspan="4">対象期間の勤務記録がありません。</td></tr>
+            <% } else { %>
+              <% sessions.forEach(function(session) { %>
+                <tr>
+                  <td>
+                    <input
+                      type="datetime-local"
+                      name="startTime"
+                      value="<%= session.startInput %>"
+                      required
                       form="session-form-<%= session.id %>"
                     >
-                      保存
-                    </button>
-                    <button
-                      type="submit"
-                      class="btn danger"
+                  </td>
+                  <td>
+                    <input
+                      type="datetime-local"
+                      name="endTime"
+                      value="<%= session.endInput %>"
                       form="session-form-<%= session.id %>"
-                      formaction="/admin/employees/<%= employee.id %>/sessions/<%= session.id %>/delete<%= queryString %>"
-                      formnovalidate
                     >
-                      削除
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            <% }); %>
-          <% } %>
-        </tbody>
-      </table>
+                  </td>
+                  <td><%= session.formattedMinutes %></td>
+                  <td>
+                    <div class="session-actions">
+                      <button
+                        type="submit"
+                        class="btn primary"
+                        form="session-form-<%= session.id %>"
+                      >
+                        保存
+                      </button>
+                      <button
+                        type="submit"
+                        class="btn danger"
+                        form="session-form-<%= session.id %>"
+                        formaction="/admin/employees/<%= employee.id %>/sessions/<%= session.id %>/delete<%= queryString %>"
+                        formnovalidate
+                      >
+                        削除
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              <% }); %>
+            <% } %>
+          </tbody>
+        </table>
+      </div>
       <% if (sessions.length > 0) { %>
         <% sessions.forEach(function(session) { %>
           <form

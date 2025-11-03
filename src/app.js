@@ -27,6 +27,8 @@ const {
   getOpenWorkSession,
   getWorkSessionsByUserBetween,
   getAllWorkSessionsByUser,
+  getWorkSessionsByUserOverlapping,
+  listRecentWorkSessionsByUser,
   getWorkSessionById,
   deleteWorkSession,
   recordLoginFailure,
@@ -45,6 +47,7 @@ const {
   listPayrollRecordsByEmployee,
   getPayrollRecordById,
   getLatestPayrollRecordForDate,
+  deleteTenantById,
 } = require('./db');
 const {
   validatePassword,
@@ -535,6 +538,10 @@ function generateRoleCodeValue(length = ROLE_CODE_LENGTH) {
   return chars.join('');
 }
 
+function hashPasswordResetToken(token) {
+  return crypto.createHash('sha256').update(String(token || '')).digest('hex');
+}
+
 function formatDisplayDateTime(isoString) {
   if (!isoString) return '';
   const formatted = formatDateTime(isoString);
@@ -549,7 +556,12 @@ function formatDisplayDateTime(isoString) {
 }
 
 async function hasOverlappingSessions(userId, startIso, endIso, excludeSessionId = null) {
-  const sessions = await getAllWorkSessionsByUser(userId);
+  let sessions;
+  if (endIso) {
+    sessions = await getWorkSessionsByUserOverlapping(userId, startIso, endIso);
+  } else {
+    sessions = await getAllWorkSessionsByUser(userId);
+  }
   const targetStart = Date.parse(startIso);
   const targetEnd = endIso ? Date.parse(endIso) : Number.POSITIVE_INFINITY;
 
@@ -850,8 +862,13 @@ app.post('/password/reset', async (req, res) => {
   }
 
   const token = crypto.randomBytes(32).toString('hex');
+  const tokenHash = hashPasswordResetToken(token);
   const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
-  await createPasswordResetToken(user.id, token, expiresAt);
+  await createPasswordResetToken({
+    userId: user.id,
+    tokenHash,
+    expiresAt,
+  });
 
   const resetLink = new URL(`/password/reset/${token}`, appBaseUrl).toString();
   if (process.env.NODE_ENV !== 'production') {
@@ -869,7 +886,12 @@ app.post('/password/reset', async (req, res) => {
 });
 
 app.get('/password/reset/:token', async (req, res) => {
-  const record = await getPasswordResetToken(req.params.token);
+  const rawToken = req.params.token || '';
+  const tokenHash = hashPasswordResetToken(rawToken);
+  const record = await getPasswordResetToken({
+    tokenHash,
+    fallbackToken: rawToken,
+  });
   if (!record) {
     setFlash(req, 'error', 'リセットリンクが無効です。再度手続きを行ってください。');
     return res.redirect('/password/reset');
@@ -885,9 +907,18 @@ app.get('/password/reset/:token', async (req, res) => {
 });
 
 app.post('/password/reset/:token', async (req, res) => {
-  const record = await getPasswordResetToken(req.params.token);
+  const rawToken = req.params.token || '';
+  const tokenHash = hashPasswordResetToken(rawToken);
+  const record = await getPasswordResetToken({
+    tokenHash,
+    fallbackToken: rawToken,
+  });
   if (!record) {
     setFlash(req, 'error', 'リセットリンクが無効です。再度手続きを行ってください。');
+    return res.redirect('/password/reset');
+  }
+  if (record.used_at) {
+    setFlash(req, 'error', 'このリセットリンクは既に使用されています。再度手続きを行ってください。');
     return res.redirect('/password/reset');
   }
   if (Date.parse(record.expires_at) <= Date.now()) {
@@ -966,21 +997,19 @@ app.get('/employee', requireRole(ROLES.EMPLOYEE), async (req, res) => {
   const monthDate = toZonedDateTime(now.toISOString());
   const monthlySummary = await getUserMonthlySummary(userId, monthDate.year, monthDate.month);
 
-  const allSessions = await getAllWorkSessionsByUser(userId);
-  const sessionHistory = allSessions
-    .slice(0, 10)
-    .map((session) => {
-      const durationMinutes = session.end_time
-        ? diffMinutes(session.start_time, session.end_time)
-        : null;
-      return {
-        id: session.id,
-        startFormatted: formatDateTime(session.start_time),
-        endFormatted: session.end_time ? formatDateTime(session.end_time) : '記録中',
-        minutes: durationMinutes,
-        formattedMinutes: durationMinutes !== null ? formatMinutesToHM(durationMinutes) : '--',
-      };
-    });
+  const recentSessions = await listRecentWorkSessionsByUser(userId, 10);
+  const sessionHistory = recentSessions.map((session) => {
+    const durationMinutes = session.end_time
+      ? diffMinutes(session.start_time, session.end_time)
+      : null;
+    return {
+      id: session.id,
+      startFormatted: formatDateTime(session.start_time),
+      endFormatted: session.end_time ? formatDateTime(session.end_time) : '記録中',
+      minutes: durationMinutes,
+      formattedMinutes: durationMinutes !== null ? formatMinutesToHM(durationMinutes) : '--',
+    };
+  });
 
   res.render('employee_dashboard', {
     openSession: openSession
@@ -1736,11 +1765,18 @@ app.post('/platform/tenants', requireRole(ROLES.PLATFORM), async (req, res) => {
   }
 
   const tenantUid = await generateTenantUid();
-  const tenant = await createTenant({
-    tenantUid,
-    name: tenantNameResult.value,
-    contactEmail,
-  });
+  let tenant;
+  try {
+    tenant = await createTenant({
+      tenantUid,
+      name: tenantNameResult.value,
+      contactEmail,
+    });
+  } catch (error) {
+    console.error('[platform] テナント作成に失敗しました', error);
+    setFlash(req, 'error', 'テナントの登録に失敗しました。時間をおいて再試行してください。');
+    return res.redirect('/platform/tenants');
+  }
 
   const initialPassword = generateInitialAdminPassword(16);
   const hashedPassword = await hashPassword(initialPassword);
@@ -1759,6 +1795,11 @@ app.post('/platform/tenants', requireRole(ROLES.PLATFORM), async (req, res) => {
     });
   } catch (error) {
     console.error('[platform] テナント管理者アカウント作成に失敗しました', error);
+    try {
+      await deleteTenantById(tenant.id);
+    } catch (cleanupError) {
+      console.error('[platform] テナント作成失敗時のロールバックに失敗しました', cleanupError);
+    }
     setFlash(req, 'error', 'テナント管理者アカウントの作成に失敗しました。');
     return res.redirect('/platform/tenants');
   }

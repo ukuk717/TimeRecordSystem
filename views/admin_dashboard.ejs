@@ -42,48 +42,50 @@
         <button type="submit" class="btn">表示</button>
       </form>
 
-      <table class="table">
-        <thead>
-          <tr>
-            <th>従業員</th>
-            <th>月合計</th>
-            <th>勤務記録訂正</th>
-            <th>Excel出力</th>
-          </tr>
-        </thead>
-        <tbody>
-          <% if (!monthlySummary || monthlySummary.length === 0) { %>
-            <tr><td colspan="4">従業員が登録されていません。</td></tr>
-          <% } else { %>
-            <% monthlySummary.forEach(function(row) { %>
-              <tr>
-                <td>
-                  <div class="user-cell">
-                    <span class="user-name"><%= row.user.username %></span>
-                    <% if (row.user.email) { %>
-                      <span class="user-email"><%= row.user.email %></span>
-                    <% } %>
-                  </div>
-                </td>
-                <td><%= row.formattedTotal %></td>
-                <td>
-                  <a
-                    class="btn secondary"
-                    href="/admin/employees/<%= row.user.id %>/sessions?year=<%= targetYear %>&month=<%= targetMonth %>"
-                  >
-                    勤務記録訂正
-                  </a>
-                </td>
-                <td>
-                  <a class="btn secondary" href="/admin/export?userId=<%= row.user.id %>&year=<%= targetYear %>&month=<%= targetMonth %>">
-                    Excel出力
-                  </a>
-                </td>
-              </tr>
-            <% }); %>
-          <% } %>
-        </tbody>
-      </table>
+      <div class="table-responsive">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>従業員</th>
+              <th>月合計</th>
+              <th>勤務記録訂正</th>
+              <th>Excel出力</th>
+            </tr>
+          </thead>
+          <tbody>
+            <% if (!monthlySummary || monthlySummary.length === 0) { %>
+              <tr><td colspan="4">従業員が登録されていません。</td></tr>
+            <% } else { %>
+              <% monthlySummary.forEach(function(row) { %>
+                <tr>
+                  <td>
+                    <div class="user-cell">
+                      <span class="user-name"><%= row.user.username %></span>
+                      <% if (row.user.email) { %>
+                        <span class="user-email"><%= row.user.email %></span>
+                      <% } %>
+                    </div>
+                  </td>
+                  <td><%= row.formattedTotal %></td>
+                  <td>
+                    <a
+                      class="btn secondary"
+                      href="/admin/employees/<%= row.user.id %>/sessions?year=<%= targetYear %>&month=<%= targetMonth %>"
+                    >
+                      勤務記録訂正
+                    </a>
+                  </td>
+                  <td>
+                    <a class="btn secondary" href="/admin/export?userId=<%= row.user.id %>&year=<%= targetYear %>&month=<%= targetMonth %>">
+                      Excel出力
+                    </a>
+                  </td>
+                </tr>
+              <% }); %>
+            <% } %>
+          </tbody>
+        </table>
+      </div>
     </section>
   </main>
 </body>
