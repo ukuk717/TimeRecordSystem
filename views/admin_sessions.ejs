@@ -57,15 +57,28 @@
         method="post"
         action="/admin/employees/<%= employee.id %>/sessions<%= queryString %>"
         class="form form-inline session-add-form"
+        id="sessionAddForm"
       >
         <input type="hidden" name="_csrf" value="<%= csrfToken %>">
         <label class="form-field">
           <span>開始日時</span>
-          <input type="datetime-local" name="startTime" required>
+          <input
+            type="datetime-local"
+            name="startTime"
+            required
+            min="2000-01-01T00:00"
+            max="2100-12-31T23:59"
+          >
         </label>
         <label class="form-field">
           <span>終了日時</span>
-          <input type="datetime-local" name="endTime" required>
+          <input
+            type="datetime-local"
+            name="endTime"
+            required
+            min="2000-01-01T00:00"
+            max="2100-12-31T23:59"
+          >
         </label>
         <button type="submit" class="btn primary">記録を追加</button>
       </form>
@@ -95,6 +108,8 @@
                       name="startTime"
                       value="<%= session.startInput %>"
                       required
+                      min="2000-01-01T00:00"
+                      max="2100-12-31T23:59"
                       form="session-form-<%= session.id %>"
                     >
                   </td>
@@ -103,6 +118,8 @@
                       type="datetime-local"
                       name="endTime"
                       value="<%= session.endInput %>"
+                      min="2000-01-01T00:00"
+                      max="2100-12-31T23:59"
                       form="session-form-<%= session.id %>"
                     >
                   </td>
@@ -146,5 +163,83 @@
       <% } %>
     </section>
   </main>
+
+  <div class="dialog-backdrop" id="sessionConfirmDialog" hidden>
+    <div class="dialog">
+      <h3>勤務記録追加の確認</h3>
+      <p>以下の内容で勤務記録を追加します。</p>
+      <dl class="definition-list">
+        <div>
+          <dt>開始日時</dt>
+          <dd id="confirmSessionStart">-</dd>
+        </div>
+        <div>
+          <dt>終了日時</dt>
+          <dd id="confirmSessionEnd">-</dd>
+        </div>
+      </dl>
+      <p class="form-note">入力内容を今一度確認してください。</p>
+      <div class="dialog-actions">
+        <button type="button" class="btn" id="sessionConfirmCancel">戻る</button>
+        <button type="button" class="btn primary" id="sessionConfirmSubmit">追加する</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      const form = document.getElementById('sessionAddForm');
+      if (!form) {
+        return;
+      }
+      const dialog = document.getElementById('sessionConfirmDialog');
+      if (!dialog) {
+        return;
+      }
+      const startInput = form.querySelector('input[name="startTime"]');
+      const endInput = form.querySelector('input[name="endTime"]');
+      const confirmStart = document.getElementById('confirmSessionStart');
+      const confirmEnd = document.getElementById('confirmSessionEnd');
+      const confirmSubmit = document.getElementById('sessionConfirmSubmit');
+      const confirmCancel = document.getElementById('sessionConfirmCancel');
+      let confirmed = false;
+
+      form.addEventListener('submit', (event) => {
+        if (confirmed) {
+          confirmed = false;
+          return;
+        }
+        event.preventDefault();
+        if (typeof form.reportValidity === 'function' && !form.reportValidity()) {
+          return;
+        }
+        const startValue = startInput ? startInput.value : '';
+        const endValue = endInput ? endInput.value : '';
+        confirmStart.textContent = startValue ? startValue.replace('T', ' ') : '-';
+        confirmEnd.textContent = endValue ? endValue.replace('T', ' ') : '-';
+        dialog.hidden = false;
+      });
+
+      if (confirmSubmit) {
+        confirmSubmit.addEventListener('click', () => {
+          dialog.hidden = true;
+          confirmed = true;
+          form.submit();
+        });
+      }
+
+      if (confirmCancel) {
+        confirmCancel.addEventListener('click', () => {
+          dialog.hidden = true;
+        });
+      }
+
+      dialog.addEventListener('click', (event) => {
+        if (event.target === dialog) {
+          dialog.hidden = true;
+        }
+      });
+    })();
+  </script>
 </body>
 </html>

@@ -5,7 +5,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node --env-file=.env server.js",
-    "test": "cross-env NODE_ENV=test DB_FILE=:memory: jest --runInBand"
+    "test": "cross-env NODE_ENV=test DB_FILE=:memory: jest --runInBand",
+    "purge:expired": "node --env-file=.env scripts/purgeExpiredData.js"
   },
   "repository": {
     "type": "git",

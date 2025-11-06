@@ -70,15 +70,91 @@
                   <td>
                     <a
                       class="btn secondary"
-                      href="/admin/employees/<%= row.user.id %>/sessions?year=<%= targetYear %>&month=<%= targetMonth %>"
+                      href="/admin/employees/<%= row.user.id %>/sessions<%= queryString %>"
                     >
                       勤務記録訂正
                     </a>
                   </td>
                   <td>
-                    <a class="btn secondary" href="/admin/export?userId=<%= row.user.id %>&year=<%= targetYear %>&month=<%= targetMonth %>">
-                      Excel出力
-                    </a>
+                    <form method="post" action="/admin/export" class="inline-form" style="display:inline;">
+                      <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                      <input type="hidden" name="userId" value="<%= row.user.id %>">
+                      <input type="hidden" name="year" value="<%= targetYear %>">
+                      <input type="hidden" name="month" value="<%= targetMonth %>">
+                      <button type="submit" class="btn secondary">Excel出力</button>
+                    </form>
+                  </td>
+                </tr>
+              <% }); %>
+            <% } %>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>従業員アカウント管理</h2>
+      <p class="form-note">
+        退職・解約後も最大 <strong><%= retentionYears %>年</strong> は勤怠・給与データが保持され、期間経過後は自動でアーカイブされます。
+      </p>
+      <div class="table-responsive">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>従業員</th>
+              <th>メール</th>
+              <th>状態</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <% if (!employeesActive || employeesActive.length === 0) { %>
+              <tr><td colspan="4">有効な従業員がいません。</td></tr>
+            <% } else { %>
+              <% employeesActive.forEach(function(employee) { %>
+                <tr>
+                  <td><%= employee.username %></td>
+                  <td><%= employee.email || '未設定' %></td>
+                  <td><span class="status-badge success">有効</span></td>
+                  <td>
+                    <form method="post" action="/admin/employees/<%= employee.id %>/status" class="form-inline">
+                      <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                      <input type="hidden" name="action" value="deactivate">
+                      <button type="submit" class="btn danger">無効化</button>
+                    </form>
+                  </td>
+                </tr>
+              <% }); %>
+            <% } %>
+          </tbody>
+        </table>
+      </div>
+      <h3>無効化済み従業員</h3>
+      <div class="table-responsive">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>従業員</th>
+              <th>メール</th>
+              <th>最終更新</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <% if (!employeesInactive || employeesInactive.length === 0) { %>
+              <tr><td colspan="4">無効化された従業員はいません。</td></tr>
+            <% } else { %>
+              <% employeesInactive.forEach(function(employee) { %>
+                <tr>
+                  <td><%= employee.username %></td>
+                  <td><%= employee.email || '未設定' %></td>
+                  <td><%= employee.deactivatedAtDisplay || '-' %></td>
+                  <td>
+                    <form method="post" action="/admin/employees/<%= employee.id %>/status" class="form-inline">
+                      <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                      <input type="hidden" name="action" value="activate">
+                      <button type="submit" class="btn secondary">再有効化</button>
+                    </form>
                   </td>
                 </tr>
               <% }); %>

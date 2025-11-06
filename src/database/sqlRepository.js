@@ -69,13 +69,22 @@ class SqlRepository {
     await this.initialize();
   }
 
-  async createTenant({ tenantUid, tenant_uid, name = null, contactEmail = null, contact_email = null }) {
+  async createTenant({
+    tenantUid,
+    tenant_uid,
+    name = null,
+    contactEmail = null,
+    contact_email = null,
+    status = 'active',
+  }) {
     await this.ensureInitialized();
     const payload = {
       tenant_uid: tenant_uid || tenantUid,
       name,
       contact_email: contact_email || contactEmail,
       created_at: isoNow(),
+      status,
+      deactivated_at: null,
     };
     return this.insertAndFetch('tenants', payload);
   }
@@ -99,6 +108,18 @@ class SqlRepository {
     return rows.map(normalizeRow);
   }
 
+  async updateTenantStatus(tenantId, status) {
+    await this.ensureInitialized();
+    if (status === 'active') {
+      await this.knex('tenants').where({ id: tenantId }).update({ status, deactivated_at: null });
+      return;
+    }
+    await this.knex('tenants').where({ id: tenantId }).update({
+      status,
+      deactivated_at: isoNow(),
+    });
+  }
+
   async createUser({
     tenantId = null,
     username,
@@ -108,6 +129,7 @@ class SqlRepository {
     mustChangePassword = false,
     firstName = null,
     lastName = null,
+    status = 'active',
   }) {
     await this.ensureInitialized();
     const payload = {
@@ -122,6 +144,8 @@ class SqlRepository {
       first_name: firstName,
       last_name: lastName,
       created_at: isoNow(),
+      status,
+      deactivated_at: null,
     };
     return this.insertAndFetch('users', payload);
   }
@@ -162,9 +186,32 @@ class SqlRepository {
   async getAllEmployeesByTenant(tenantId) {
     await this.ensureInitialized();
     const rows = await this.knex('users')
+      .where({ tenant_id: tenantId, role: 'employee', status: 'active' })
+      .orderBy('username', 'asc');
+    return rows.map(normalizeRow);
+  }
+
+  async getAllEmployeesByTenantIncludingInactive(tenantId) {
+    await this.ensureInitialized();
+    const rows = await this.knex('users')
       .where({ tenant_id: tenantId, role: 'employee' })
       .orderBy('username', 'asc');
     return rows.map(normalizeRow);
+  }
+
+  async updateUserStatus(userId, status) {
+    await this.ensureInitialized();
+    if (status === 'active') {
+      await this.knex('users').where({ id: userId }).update({
+        status,
+        deactivated_at: null,
+      });
+      return;
+    }
+    await this.knex('users').where({ id: userId }).update({
+      status,
+      deactivated_at: isoNow(),
+    });
   }
 
   async recordLoginFailure(userId, lockedUntil = null) {
@@ -297,6 +344,7 @@ class SqlRepository {
       start_time: isoStart,
       end_time: null,
       created_at: isoNow(),
+      archived_at: null,
     };
     const row = await this.insertAndFetch('work_sessions', payload);
     return row;
@@ -321,6 +369,7 @@ class SqlRepository {
       start_time: isoStart,
       end_time: isoEnd,
       created_at: isoNow(),
+      archived_at: null,
     };
     const row = await this.insertAndFetch('work_sessions', payload);
     return row;
@@ -331,6 +380,7 @@ class SqlRepository {
     const row = await this.knex('work_sessions')
       .where({ user_id: userId })
       .andWhere({ end_time: null })
+      .whereNull('archived_at')
       .orderBy('start_time', 'desc')
       .first();
     return normalizeRow(row);
@@ -342,6 +392,7 @@ class SqlRepository {
       .where({ user_id: userId })
       .andWhere('start_time', '>=', startIso)
       .andWhere('start_time', '<', endIso)
+      .whereNull('archived_at')
       .orderBy('start_time', 'asc');
     return rows.map(normalizeRow);
   }
@@ -350,6 +401,7 @@ class SqlRepository {
     await this.ensureInitialized();
     const rows = await this.knex('work_sessions')
       .where({ user_id: userId })
+      .whereNull('archived_at')
       .orderBy('start_time', 'desc');
     return rows.map(normalizeRow);
   }
@@ -388,6 +440,7 @@ class SqlRepository {
       sent_on: sentOn,
       sent_at: sentAt,
       created_at: isoNow(),
+      archived_at: null,
     };
     return this.insertAndFetch('payroll_records', payload);
   }
@@ -396,6 +449,7 @@ class SqlRepository {
     await this.ensureInitialized();
     const rows = await this.knex('payroll_records')
       .where({ tenant_id: tenantId })
+      .whereNull('archived_at')
       .orderBy('sent_at', 'desc')
       .limit(limit)
       .offset(offset);
@@ -406,6 +460,7 @@ class SqlRepository {
     await this.ensureInitialized();
     const rows = await this.knex('payroll_records')
       .where({ employee_id: employeeId })
+      .whereNull('archived_at')
       .orderBy('sent_at', 'desc');
     return rows.map(normalizeRow);
   }
@@ -420,9 +475,70 @@ class SqlRepository {
     await this.ensureInitialized();
     const row = await this.knex('payroll_records')
       .where({ employee_id: employeeId, sent_on: sentOn })
+      .whereNull('archived_at')
       .orderBy('sent_at', 'desc')
       .first();
     return normalizeRow(row);
+  }
+
+  async markPayrollRecordsArchived(recordIds, archivedAtIso) {
+    if (!Array.isArray(recordIds) || recordIds.length === 0) {
+      return;
+    }
+    await this.ensureInitialized();
+    await this.knex('payroll_records')
+      .whereIn('id', recordIds)
+      .update({ archived_at: archivedAtIso });
+  }
+
+  async deletePayrollRecords(recordIds) {
+    if (!Array.isArray(recordIds) || recordIds.length === 0) {
+      return;
+    }
+    await this.ensureInitialized();
+    await this.knex('payroll_records').whereIn('id', recordIds).del();
+  }
+
+  async findPayrollRecordsOlderThan(cutoffIso, limit = 200) {
+    await this.ensureInitialized();
+    const rows = await this.knex('payroll_records')
+      .where('created_at', '<', cutoffIso)
+      .andWhere((qb) => {
+        qb.whereNull('archived_at').orWhere('archived_at', '<', cutoffIso);
+      })
+      .orderBy('created_at', 'asc')
+      .limit(limit);
+    return rows.map(normalizeRow);
+  }
+
+  async findWorkSessionsOlderThan(cutoffIso, limit = 500) {
+    await this.ensureInitialized();
+    const rows = await this.knex('work_sessions')
+      .where('start_time', '<', cutoffIso)
+      .andWhere((qb) => {
+        qb.whereNull('archived_at').orWhere('archived_at', '<', cutoffIso);
+      })
+      .orderBy('start_time', 'asc')
+      .limit(limit);
+    return rows.map(normalizeRow);
+  }
+
+  async markWorkSessionsArchived(sessionIds, archivedAtIso) {
+    if (!Array.isArray(sessionIds) || sessionIds.length === 0) {
+      return;
+    }
+    await this.ensureInitialized();
+    await this.knex('work_sessions')
+      .whereIn('id', sessionIds)
+      .update({ archived_at: archivedAtIso });
+  }
+
+  async deleteWorkSessions(sessionIds) {
+    if (!Array.isArray(sessionIds) || sessionIds.length === 0) {
+      return;
+    }
+    await this.ensureInitialized();
+    await this.knex('work_sessions').whereIn('id', sessionIds).del();
   }
 
   async ensureDefaultPlatformAdmin() {
@@ -457,6 +573,8 @@ class SqlRepository {
           must_change_password: toDbBool(true),
           failed_attempts: 0,
           locked_until: null,
+          status: 'active',
+          deactivated_at: null,
         });
       if (process.env.NODE_ENV !== 'test') {
         // eslint-disable-next-line no-console
@@ -477,6 +595,8 @@ class SqlRepository {
       first_name: null,
       last_name: null,
       created_at: isoNow(),
+      status: 'active',
+      deactivated_at: null,
     });
 
     if (process.env.NODE_ENV !== 'test') {
@@ -516,6 +636,7 @@ class SqlRepository {
       .andWhere((qb) => {
         qb.where('end_time', '>', rangeStartIso).orWhereNull('end_time');
       })
+      .whereNull('archived_at')
       .orderBy('start_time', 'asc');
     return rows.map(normalizeRow);
   }
@@ -524,6 +645,7 @@ class SqlRepository {
     await this.ensureInitialized();
     const rows = await this.knex('work_sessions')
       .where({ user_id: userId })
+      .whereNull('archived_at')
       .orderBy('start_time', 'desc')
       .limit(limit);
     return rows.map(normalizeRow);

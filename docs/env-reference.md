@@ -5,6 +5,7 @@
 | アプリ設定 | `APP_TIMEZONE` | 任意 (既定: `Asia/Tokyo`) | 勤怠ロジックのタイムゾーン。Lambda では `Asia/Tokyo` を維持。 | Systems Manager Parameter Store |
 | アプリ設定 | `APP_BASE_URL` | 必須 | パスワードリセット等で生成する絶対 URL のホスト。API Gateway のカスタムドメインに合わせる。 | Parameter Store |
 | アプリ設定 | `ALLOWED_HOSTS` | 任意 | ホワイトリスト化する `Host` ヘッダー（カンマ区切り）。 | Parameter Store |
+| データ保持 | `DATA_RETENTION_YEARS` | 任意 (既定: `5`) | 勤怠・給与明細を保持する年数。バッチ `npm run purge:expired` で基準として利用。 | Parameter Store |
 | セッション | `SESSION_SECRET` | **必須** | `express-session` の署名シークレット。ローカル以外では必ず固定値を注入。 | **Secrets Manager** |
 | セッション | `SESSION_STORE_DRIVER` | 任意 (既定: `knex`) | `knex`（RDS）、`dynamodb`、`memory` を切替。Lambda 本番では `knex` か `dynamodb` を推奨。 | Parameter Store |
 | セッション | `SESSION_TABLE_NAME` | 任意 | `connect-session-knex` のテーブル名（既定: `sessions`）。 | Parameter Store |

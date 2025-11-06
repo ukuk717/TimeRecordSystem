@@ -4,4 +4,4 @@ content_2.md
 data/session-secret.txt
 node_modules/
 data/
-
+.env

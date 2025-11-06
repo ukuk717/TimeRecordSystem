@@ -88,11 +88,13 @@
               <th>名称</th>
               <th>連絡先メール</th>
               <th>登録日時</th>
+              <th>状態</th>
+              <th>操作</th>
             </tr>
           </thead>
           <tbody>
             <% if (!tenants || tenants.length === 0) { %>
-              <tr><td colspan="4">登録済みテナントはありません。</td></tr>
+              <tr><td colspan="6">登録済みテナントはありません。</td></tr>
             <% } else { %>
               <% tenants.forEach(function(tenant) { %>
                 <tr>
@@ -100,6 +102,25 @@
                   <td><%= tenant.name || '名称未設定' %></td>
                   <td><%= tenant.contact_email || '未設定' %></td>
                   <td><%= tenant.createdAtDisplay || '---' %></td>
+                  <td>
+                    <% if (tenant.status === 'active') { %>
+                      <span class="status-badge success">稼働中</span>
+                    <% } else { %>
+                      <span class="status-badge warning">停止中</span>
+                    <% } %>
+                  </td>
+                  <td>
+                    <form method="post" action="/platform/tenants/<%= tenant.id %>/status" class="form-inline">
+                      <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                      <% if (tenant.status === 'active') { %>
+                        <input type="hidden" name="action" value="deactivate">
+                        <button type="submit" class="btn danger">停止</button>
+                      <% } else { %>
+                        <input type="hidden" name="action" value="activate">
+                        <button type="submit" class="btn secondary">再開</button>
+                      <% } %>
+                    </form>
+                  </td>
                 </tr>
               <% }); %>
             <% } %>

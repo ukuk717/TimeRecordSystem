@@ -14,12 +14,14 @@ const {
   getTenantById,
   getTenantByUid,
   listTenants,
+  updateTenantStatus,
   createUser,
   updateUserPassword,
   setMustChangePassword,
   getUserByEmail,
   getUserById,
   getAllEmployeesByTenant,
+  getAllEmployeesByTenantIncludingInactive,
   createWorkSession,
   closeWorkSession,
   createWorkSessionWithEnd,
@@ -33,6 +35,7 @@ const {
   deleteWorkSession,
   recordLoginFailure,
   resetLoginFailures,
+  updateUserStatus,
   createRoleCode,
   getRoleCodeByCode,
   getRoleCodeById,
@@ -124,7 +127,25 @@ const ROLES = {
   EMPLOYEE: 'employee',
 };
 
+const USER_STATUS = {
+  ACTIVE: 'active',
+  INACTIVE: 'inactive',
+};
+
+const TENANT_STATUS = {
+  ACTIVE: 'active',
+  INACTIVE: 'inactive',
+};
+
 const DEFAULT_SESSION_TTL_SECONDS = 60 * 60 * 12;
+const DEFAULT_DATA_RETENTION_YEARS = 5;
+const DATA_RETENTION_YEARS = Math.max(
+  1,
+  parsePositiveInt(process.env.DATA_RETENTION_YEARS, DEFAULT_DATA_RETENTION_YEARS)
+);
+const SESSION_YEAR_MIN = 2000;
+const SESSION_YEAR_MAX = 2100;
+const SESSION_YEAR_RANGE_MESSAGE = `${SESSION_YEAR_MIN}年から${SESSION_YEAR_MAX}年までの日時を入力してください。`;
 
 function parsePositiveInt(value, fallback) {
   const parsed = Number.parseInt(value, 10);
@@ -146,6 +167,17 @@ function parseBoolean(value, fallback = false) {
     return false;
   }
   return fallback;
+}
+
+function isSessionDateWithinAllowedRange(isoString) {
+  if (!isoString) {
+    return false;
+  }
+  const dt = toZonedDateTime(isoString);
+  if (!dt || !dt.isValid) {
+    return false;
+  }
+  return dt.year >= SESSION_YEAR_MIN && dt.year <= SESSION_YEAR_MAX;
 }
 
 function resolveSessionCookieSecure() {
@@ -503,6 +535,38 @@ app.use((req, res, next) => {
   return res.redirect('/password/change');
 });
 
+app.use(async (req, res, next) => {
+  if (!req.session.user) {
+    next();
+    return;
+  }
+  try {
+    const dbUser = await getUserById(req.session.user.id);
+    if (!dbUser || dbUser.status !== USER_STATUS.ACTIVE) {
+      setFlash(req, 'error', 'アカウントが無効化されたためログアウトします。');
+      delete req.session.user;
+      res.redirect('/login');
+      return;
+    }
+    let tenantStatus = null;
+    if (dbUser.tenant_id) {
+      const tenant = await getTenantById(dbUser.tenant_id);
+      if (!tenant || tenant.status !== TENANT_STATUS.ACTIVE) {
+        setFlash(req, 'error', '所属テナントが利用停止中のため操作できません。');
+        delete req.session.user;
+        res.redirect('/login');
+        return;
+      }
+      tenantStatus = tenant.status;
+    }
+    req.session.user.status = dbUser.status;
+    req.session.user.tenantStatus = tenantStatus;
+    next();
+  } catch (error) {
+    next(error);
+  }
+});
+
 function setFlash(req, type, message) {
   req.session.flash = { type, message };
 }
@@ -617,6 +681,21 @@ function buildSessionQuery(query = {}) {
   return params.length > 0 ? `?${params.join('&')}` : '';
 }
 
+function normalizeSessionQueryParams(query = {}) {
+  const normalized = {};
+  const rawYear = Number.parseInt(query.year, 10);
+  if (!Number.isNaN(rawYear)) {
+    const clampedYear = Math.min(Math.max(rawYear, SESSION_YEAR_MIN), SESSION_YEAR_MAX);
+    normalized.year = clampedYear;
+  }
+  const rawMonth = Number.parseInt(query.month, 10);
+  if (!Number.isNaN(rawMonth)) {
+    const clampedMonth = Math.min(Math.max(rawMonth, 1), 12);
+    normalized.month = clampedMonth;
+  }
+  return normalized;
+}
+
 const buildAdminSessionsUrl = (userId, query = {}) =>
   `/admin/employees/${userId}/sessions${buildSessionQuery(query)}`;
 
@@ -694,6 +773,10 @@ app.post('/login', async (req, res) => {
     setFlash(req, 'error', 'メールアドレスまたはパスワードが正しくありません。');
     return res.redirect('/login');
   }
+  if (user.status !== USER_STATUS.ACTIVE) {
+    setFlash(req, 'error', 'アカウントが無効化されています。管理者にお問い合わせください。');
+    return res.redirect('/login');
+  }
 
   const now = new Date();
   if (user.locked_until && Date.parse(user.locked_until) > now.getTime()) {
@@ -731,12 +814,23 @@ app.post('/login', async (req, res) => {
     return res.redirect('/login');
   }
 
+  let userTenant = null;
+  if (user.tenant_id) {
+    userTenant = await getTenantById(user.tenant_id);
+    if (!userTenant || userTenant.status !== TENANT_STATUS.ACTIVE) {
+      setFlash(req, 'error', '所属テナントが利用停止中のためログインできません。管理者にお問い合わせください。');
+      return res.redirect('/login');
+    }
+  }
+
   await resetLoginFailures(user.id);
   req.session.user = {
     id: user.id,
     username: user.username,
     role: user.role,
     tenantId: user.tenant_id,
+    status: user.status,
+    tenantStatus: userTenant ? userTenant.status : null,
   };
 
   if (user.must_change_password) {
@@ -1081,7 +1175,8 @@ app.get(
       if (
         !record ||
         record.employee_id !== userId ||
-        (tenantId && record.tenant_id !== tenantId)
+        (tenantId && record.tenant_id !== tenantId) ||
+        record.archived_at
       ) {
         setFlash(req, 'error', '指定された給与明細が見つかりません。');
         return res.redirect('/employee/payrolls');
@@ -1137,23 +1232,66 @@ app.get(
   ensureTenantContext,
   async (req, res) => {
     const now = new Date();
-    const { year, month } = req.query;
-    const baseDate =
-      year && month
-        ? toZonedDateTime(new Date(Date.UTC(year, month - 1, 1)).toISOString())
-        : toZonedDateTime(now.toISOString());
-    const targetYear = parseInt(year || baseDate.year, 10);
-    const targetMonth = parseInt(month || baseDate.month, 10);
+    const normalizedQueryInput = normalizeSessionQueryParams(req.query);
+    const nowZoned = toZonedDateTime(now.toISOString());
+    const targetYear = normalizedQueryInput.year || nowZoned.year;
+    const targetMonth = normalizedQueryInput.month || nowZoned.month;
+    const effectiveQuery = { year: targetYear, month: targetMonth };
 
     const tenantId = req.session.user.tenantId;
     const monthlySummary = await getMonthlySummaryForAllEmployees(tenantId, targetYear, targetMonth);
-
+    const allEmployees = await getAllEmployeesByTenantIncludingInactive(tenantId);
+    const employeesActive = allEmployees
+      .filter((employee) => employee.status === USER_STATUS.ACTIVE)
+      .sort((a, b) => (a.username || '').localeCompare(b.username || '', 'ja'));
+    const employeesInactive = allEmployees
+      .filter((employee) => employee.status !== USER_STATUS.ACTIVE)
+      .sort((a, b) => (a.username || '').localeCompare(b.username || '', 'ja'));
+    const employeesInactiveDisplay = employeesInactive.map((employee) => ({
+      ...employee,
+      deactivatedAtDisplay: employee.deactivated_at ? formatDateTime(employee.deactivated_at) : '',
+    }));
     res.render('admin_dashboard', {
       monthlySummary,
       targetYear,
       targetMonth,
       tenantId,
+      employeesActive,
+      employeesInactive: employeesInactiveDisplay,
+      retentionYears: DATA_RETENTION_YEARS,
+      queryString: buildSessionQuery(effectiveQuery),
     });
+  }
+);
+
+app.post(
+  '/admin/employees/:userId/status',
+  requireRole(ROLES.TENANT),
+  ensureTenantContext,
+  async (req, res) => {
+    const employee = await getEmployeeForTenantAdmin(req, res);
+    if (!employee) {
+      return;
+    }
+    const action = (req.body.action || '').toLowerCase();
+    if (action === 'deactivate') {
+      if (employee.status === USER_STATUS.INACTIVE) {
+        setFlash(req, 'info', 'すでに無効化されています。');
+      } else {
+        await updateUserStatus(employee.id, USER_STATUS.INACTIVE);
+        setFlash(req, 'success', '従業員アカウントを無効化しました。');
+      }
+    } else if (action === 'activate') {
+      if (employee.status === USER_STATUS.ACTIVE) {
+        setFlash(req, 'info', 'すでに有効です。');
+      } else {
+        await updateUserStatus(employee.id, USER_STATUS.ACTIVE);
+        setFlash(req, 'success', '従業員アカウントを再有効化しました。');
+      }
+    } else {
+      setFlash(req, 'error', '不明な操作です。');
+    }
+    res.redirect('/admin');
   }
 );
 
@@ -1206,6 +1344,7 @@ app.get(
         allowedExtensions: Array.from(PAYROLL_ALLOWED_EXTENSIONS),
         maxFileSizeBytes: PAYROLL_MAX_UPLOAD_BYTES,
         sentTodayEmployeeIds,
+        retentionYears: DATA_RETENTION_YEARS,
       });
     } catch (error) {
       next(error);
@@ -1339,7 +1478,7 @@ app.get(
       }
 
       const record = await getPayrollRecordById(recordId);
-      if (!record || record.tenant_id !== tenantId) {
+      if (!record || record.tenant_id !== tenantId || record.archived_at) {
         setFlash(req, 'error', '指定された給与明細が見つかりません。');
         return res.redirect('/admin/payrolls');
       }
@@ -1504,16 +1643,18 @@ app.get(
     if (!employee) {
       return;
     }
+    if (employee.status !== USER_STATUS.ACTIVE) {
+      setFlash(req, 'error', '無効化された従業員の勤怠記録にはアクセスできません。');
+      res.redirect('/admin');
+      return;
+    }
 
     const now = new Date();
-    const requestedYear = Number.parseInt(req.query.year, 10);
-    const requestedMonth = Number.parseInt(req.query.month, 10);
-    const baseDate =
-      !Number.isNaN(requestedYear) && !Number.isNaN(requestedMonth)
-        ? toZonedDateTime(new Date(Date.UTC(requestedYear, requestedMonth - 1, 1)).toISOString())
-        : toZonedDateTime(now.toISOString());
-    const targetYear = Number.isNaN(requestedYear) ? baseDate.year : requestedYear;
-    const targetMonth = Number.isNaN(requestedMonth) ? baseDate.month : requestedMonth;
+    const normalizedQueryInput = normalizeSessionQueryParams(req.query);
+    const nowZoned = toZonedDateTime(now.toISOString());
+    const targetYear = normalizedQueryInput.year || nowZoned.year;
+    const targetMonth = normalizedQueryInput.month || nowZoned.month;
+    const effectiveQuery = { year: targetYear, month: targetMonth };
 
     const { start, end } = getMonthRange(targetYear, targetMonth);
     const startIso = start.toUTC().toISO();
@@ -1542,7 +1683,7 @@ app.get(
       targetYear,
       targetMonth,
       monthlySummary,
-      queryString: buildSessionQuery(req.query),
+      queryString: buildSessionQuery(effectiveQuery),
     });
   }
 );
@@ -1556,7 +1697,13 @@ app.post(
     if (!employee) {
       return;
     }
+    if (employee.status !== USER_STATUS.ACTIVE) {
+      setFlash(req, 'error', '無効化された従業員の勤怠記録は編集できません。');
+      res.redirect('/admin');
+      return;
+    }
 
+    const normalizedQuery = normalizeSessionQueryParams(req.query);
     const startInput = (req.body.startTime || '').trim();
     const endInput = (req.body.endTime || '').trim();
     const startIso = parseDateTimeInput(startInput);
@@ -1564,25 +1711,34 @@ app.post(
 
     if (!startIso || !endIso) {
       setFlash(req, 'error', '開始と終了の日時を正しく入力してください。');
-      res.redirect(buildAdminSessionsUrl(employee.id, req.query));
+      res.redirect(buildAdminSessionsUrl(employee.id, normalizedQuery));
+      return;
+    }
+
+    if (
+      !isSessionDateWithinAllowedRange(startIso) ||
+      !isSessionDateWithinAllowedRange(endIso)
+    ) {
+      setFlash(req, 'error', SESSION_YEAR_RANGE_MESSAGE);
+      res.redirect(buildAdminSessionsUrl(employee.id, normalizedQuery));
       return;
     }
 
     if (diffMinutes(startIso, endIso) <= 0) {
       setFlash(req, 'error', '終了時刻は開始時刻より後に設定してください。');
-      res.redirect(buildAdminSessionsUrl(employee.id, req.query));
+      res.redirect(buildAdminSessionsUrl(employee.id, normalizedQuery));
       return;
     }
 
     if (await hasOverlappingSessions(employee.id, startIso, endIso)) {
       setFlash(req, 'error', OVERLAP_ERROR_MESSAGE);
-      res.redirect(buildAdminSessionsUrl(employee.id, req.query));
+      res.redirect(buildAdminSessionsUrl(employee.id, normalizedQuery));
       return;
     }
 
     await createWorkSessionWithEnd(employee.id, startIso, endIso);
     setFlash(req, 'success', '勤務記録を追加しました。');
-    res.redirect(buildAdminSessionsUrl(employee.id, req.query));
+    res.redirect(buildAdminSessionsUrl(employee.id, normalizedQuery));
   }
 );
 
@@ -1595,12 +1751,18 @@ app.post(
     if (!employee) {
       return;
     }
+    if (employee.status !== USER_STATUS.ACTIVE) {
+      setFlash(req, 'error', '無効化された従業員の勤怠記録は編集できません。');
+      res.redirect('/admin');
+      return;
+    }
 
+    const normalizedQuery = normalizeSessionQueryParams(req.query);
     const sessionId = Number.parseInt(req.params.sessionId, 10);
     const sessionRecord = Number.isNaN(sessionId) ? null : await getWorkSessionById(sessionId);
     if (!sessionRecord || sessionRecord.user_id !== employee.id) {
       setFlash(req, 'error', '該当する勤務記録が見つかりません。');
-      res.redirect(buildAdminSessionsUrl(employee.id, req.query));
+      res.redirect(buildAdminSessionsUrl(employee.id, normalizedQuery));
       return;
     }
 
@@ -1610,7 +1772,13 @@ app.post(
 
     if (!startIso) {
       setFlash(req, 'error', '開始時刻を正しく入力してください。');
-      res.redirect(buildAdminSessionsUrl(employee.id, req.query));
+      res.redirect(buildAdminSessionsUrl(employee.id, normalizedQuery));
+      return;
+    }
+
+    if (!isSessionDateWithinAllowedRange(startIso)) {
+      setFlash(req, 'error', SESSION_YEAR_RANGE_MESSAGE);
+      res.redirect(buildAdminSessionsUrl(employee.id, normalizedQuery));
       return;
     }
 
@@ -1619,25 +1787,30 @@ app.post(
       endIso = parseDateTimeInput(endInput);
       if (!endIso) {
         setFlash(req, 'error', '終了時刻を正しく入力してください。');
-        res.redirect(buildAdminSessionsUrl(employee.id, req.query));
+        res.redirect(buildAdminSessionsUrl(employee.id, normalizedQuery));
+        return;
+      }
+      if (!isSessionDateWithinAllowedRange(endIso)) {
+        setFlash(req, 'error', SESSION_YEAR_RANGE_MESSAGE);
+        res.redirect(buildAdminSessionsUrl(employee.id, normalizedQuery));
         return;
       }
       if (diffMinutes(startIso, endIso) <= 0) {
         setFlash(req, 'error', '終了時刻は開始時刻より後に設定してください。');
-        res.redirect(buildAdminSessionsUrl(employee.id, req.query));
+        res.redirect(buildAdminSessionsUrl(employee.id, normalizedQuery));
         return;
       }
     }
 
     if (await hasOverlappingSessions(employee.id, startIso, endIso, sessionRecord.id)) {
       setFlash(req, 'error', OVERLAP_ERROR_MESSAGE);
-      res.redirect(buildAdminSessionsUrl(employee.id, req.query));
+      res.redirect(buildAdminSessionsUrl(employee.id, normalizedQuery));
       return;
     }
 
     await updateWorkSessionTimes(sessionRecord.id, startIso, endIso);
     setFlash(req, 'success', '勤務記録を更新しました。');
-    res.redirect(buildAdminSessionsUrl(employee.id, req.query));
+    res.redirect(buildAdminSessionsUrl(employee.id, normalizedQuery));
   }
 );
 
@@ -1650,32 +1823,54 @@ app.post(
     if (!employee) {
       return;
     }
+    if (employee.status !== USER_STATUS.ACTIVE) {
+      setFlash(req, 'error', '無効化された従業員の勤怠記録は削除できません。');
+      res.redirect('/admin');
+      return;
+    }
 
+    const normalizedQuery = normalizeSessionQueryParams(req.query);
     const sessionId = Number.parseInt(req.params.sessionId, 10);
     const sessionRecord = Number.isNaN(sessionId) ? null : await getWorkSessionById(sessionId);
     if (!sessionRecord || sessionRecord.user_id !== employee.id) {
       setFlash(req, 'error', '該当する勤務記録が見つかりません。');
-      res.redirect(buildAdminSessionsUrl(employee.id, req.query));
+      res.redirect(buildAdminSessionsUrl(employee.id, normalizedQuery));
       return;
     }
 
     await deleteWorkSession(sessionRecord.id);
     setFlash(req, 'success', '勤務記録を削除しました。');
-    res.redirect(buildAdminSessionsUrl(employee.id, req.query));
+    res.redirect(buildAdminSessionsUrl(employee.id, normalizedQuery));
   }
 );
 
-app.get(
+app.post(
   '/admin/export',
   requireRole(ROLES.TENANT),
   ensureTenantContext,
   async (req, res) => {
-    const { userId, year, month } = req.query;
-    if (!userId) {
+    const userId = Number.parseInt(req.body.userId, 10);
+    const year = Number.parseInt(req.body.year, 10);
+    const month = Number.parseInt(req.body.month, 10);
+
+    if (!Number.isFinite(userId)) {
       setFlash(req, 'error', '従業員を選択してください。');
       return res.redirect('/admin');
     }
-    const employee = await getUserById(Number(userId));
+
+    if (
+      !Number.isFinite(year) ||
+      year < SESSION_YEAR_MIN ||
+      year > SESSION_YEAR_MAX ||
+      !Number.isFinite(month) ||
+      month < 1 ||
+      month > 12
+    ) {
+      setFlash(req, 'error', '出力対象の年月が正しくありません。');
+      return res.redirect('/admin');
+    }
+
+    const employee = await getUserById(userId);
     if (
       !employee ||
       employee.role !== ROLES.EMPLOYEE ||
@@ -1684,9 +1879,12 @@ app.get(
       setFlash(req, 'error', '対象の従業員が見つかりません。');
       return res.redirect('/admin');
     }
-    const now = toZonedDateTime(new Date().toISOString());
-    const targetYear = parseInt(year || now.year, 10);
-    const targetMonth = parseInt(month || now.month, 10);
+    if (employee.status !== USER_STATUS.ACTIVE) {
+      setFlash(req, 'error', '無効化された従業員のデータはエクスポートできません。');
+      return res.redirect('/admin');
+    }
+    const targetYear = year;
+    const targetMonth = month;
 
     const detailed = await getUserMonthlyDetailedSessions(employee.id, targetYear, targetMonth);
     const { start } = getMonthRange(targetYear, targetMonth);
@@ -1834,6 +2032,38 @@ app.post('/platform/tenants', requireRole(ROLES.PLATFORM), async (req, res) => {
   };
 
   setFlash(req, 'success', 'テナントと管理者アカウントを作成しました。');
+  return res.redirect('/platform/tenants');
+});
+
+app.post('/platform/tenants/:tenantId/status', requireRole(ROLES.PLATFORM), async (req, res) => {
+  const tenantId = Number.parseInt(req.params.tenantId, 10);
+  if (!Number.isFinite(tenantId)) {
+    setFlash(req, 'error', 'テナントが見つかりません。');
+    return res.redirect('/platform/tenants');
+  }
+  const tenant = await getTenantById(tenantId);
+  if (!tenant) {
+    setFlash(req, 'error', 'テナントが見つかりません。');
+    return res.redirect('/platform/tenants');
+  }
+  const action = (req.body.action || '').toLowerCase();
+  if (action === 'deactivate') {
+    if (tenant.status === TENANT_STATUS.INACTIVE) {
+      setFlash(req, 'info', 'すでに停止済みです。');
+    } else {
+      await updateTenantStatus(tenant.id, TENANT_STATUS.INACTIVE);
+      setFlash(req, 'success', 'テナントを停止しました。');
+    }
+  } else if (action === 'activate') {
+    if (tenant.status === TENANT_STATUS.ACTIVE) {
+      setFlash(req, 'info', 'すでに有効です。');
+    } else {
+      await updateTenantStatus(tenant.id, TENANT_STATUS.ACTIVE);
+      setFlash(req, 'success', 'テナントを再開しました。');
+    }
+  } else {
+    setFlash(req, 'error', '不明な操作です。');
+  }
   return res.redirect('/platform/tenants');
 });
 

@@ -75,12 +75,18 @@
           <small class="form-note">
             対応拡張子: <%= allowedDisplay %> / 最大 <%= maxFileSizeMB %>MB までアップロードできます。
           </small>
+          <small class="form-note">
+            過去 <strong><%= retentionYears %>年</strong> より前の給与明細は自動的にアーカイブされ、一覧には表示されません。
+          </small>
         </div>
 
         <div class="form-actions">
           <button type="submit" class="btn primary">送信</button>
         </div>
         <p class="form-error" id="payrollFormError" hidden></p>
+        <p class="form-note">
+          PDF 以外（Excel など）のファイルはブラウザでのプレビューに対応していないため、「プレビュー」を押してもダウンロードになります。
+        </p>
       </form>
     </section>
 
