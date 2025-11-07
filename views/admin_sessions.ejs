@@ -8,8 +8,18 @@
 </head>
 <body>
   <header class="app-header">
-    <h1>勤怠管理システム - テナント管理者</h1>
-    <nav>
+    <div class="app-header__brand">
+      <h1 class="app-header__title">
+        <a href="/admin" class="app-header__home-link">勤怠管理システム</a>
+      </h1>
+      <span class="app-header__role">テナント管理者</span>
+    </div>
+    <button class="menu-toggle" type="button" aria-label="メニューを開閉" aria-expanded="false">
+      <span class="menu-toggle__bar"></span>
+      <span class="menu-toggle__bar"></span>
+      <span class="menu-toggle__bar"></span>
+    </button>
+    <nav class="app-header__nav">
       <a href="/admin" class="nav-link">ダッシュボード</a>
       <a href="/admin/payrolls" class="nav-link">給与明細送信</a>
       <a href="/admin/role-codes" class="nav-link">ロールコード管理</a>
@@ -139,6 +149,7 @@
                         form="session-form-<%= session.id %>"
                         formaction="/admin/employees/<%= employee.id %>/sessions/<%= session.id %>/delete<%= queryString %>"
                         formnovalidate
+                        data-confirm-message="選択した勤務記録を削除します。よろしいですか？"
                       >
                         削除
                       </button>
@@ -186,6 +197,7 @@
     </div>
   </div>
 
+  <script src="/header.js" defer></script>
   <script>
     (function () {
       const form = document.getElementById('sessionAddForm');

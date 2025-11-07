@@ -20,6 +20,10 @@ body {
   color: var(--text);
 }
 
+body.menu-open {
+  overflow: hidden;
+}
+
 .app-header {
   background: #ffffff;
   border-bottom: 1px solid var(--border);
@@ -31,15 +35,87 @@ body {
   gap: 1rem;
 }
 
-.app-header h1 {
+.app-header__brand {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.app-header__title {
   margin: 0;
   font-size: 1.25rem;
 }
 
-.app-header nav {
+.app-header__home-link {
+  color: var(--text);
+  text-decoration: none;
+}
+
+.app-header__home-link:hover {
+  color: var(--primary);
+}
+
+.app-header__role {
+  font-size: 0.9rem;
+  color: #666666;
+  white-space: nowrap;
+}
+
+.menu-toggle {
+  display: none;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 0.25rem;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.menu-toggle:focus {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.menu-toggle__bar {
+  display: block;
+  width: 22px;
+  height: 2px;
+  background: var(--text);
+  margin: 0;
+}
+
+.app-header__nav {
   display: flex;
   gap: 0.5rem;
   align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.app-header__backdrop {
+  display: none;
+}
+
+.app-header__backdrop.is-active {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  z-index: 900;
+  display: block;
+}
+
+.app-header__nav .nav-form {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.app-header__nav .nav-form .btn {
+  margin-left: 0;
 }
 
 .nav-link {
@@ -461,21 +537,58 @@ body {
 
 @media (max-width: 768px) {
   .app-header {
-    flex-direction: column;
-    align-items: flex-start;
+    gap: 0.75rem;
   }
 
-  .app-header nav {
+  .app-header__brand {
     width: 100%;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .app-header__role {
+    font-size: 0.85rem;
+  }
+
+  .app-header--has-toggle .menu-toggle {
+    display: inline-flex;
+  }
+
+  .app-header--has-toggle .app-header__nav {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(280px, 80vw);
+    padding: 1.75rem 1.5rem;
+    background: #ffffff;
+    box-shadow: -4px 0 20px rgba(0, 0, 0, 0.2);
     flex-direction: column;
     align-items: stretch;
-    gap: 0.4rem;
+    justify-content: flex-start;
+    gap: 0.75rem;
+    transform: translateX(100%);
+    transition: transform 0.25s ease;
+    z-index: 910;
   }
 
-  .app-header nav a,
-  .app-header nav .btn {
+  .app-header--has-toggle .app-header__nav.is-open {
+    transform: translateX(0);
+  }
+
+  .app-header--has-toggle .app-header__nav .nav-link,
+  .app-header--has-toggle .app-header__nav .btn {
     width: 100%;
-    text-align: center;
+    text-align: left;
+  }
+
+  .app-header--has-toggle .app-header__nav .nav-form {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .app-header--has-toggle .app-header__nav .nav-form .btn {
+    width: auto;
   }
 
   .container {

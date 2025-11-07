@@ -8,8 +8,19 @@
 </head>
 <body>
   <header class="app-header">
-    <h1>勤怠管理システム - プラットフォーム管理者</h1>
-    <nav>
+    <div class="app-header__brand">
+      <h1 class="app-header__title">
+        <a href="/platform/tenants" class="app-header__home-link">勤怠管理システム</a>
+      </h1>
+      <span class="app-header__role">プラットフォーム管理者</span>
+    </div>
+    <button class="menu-toggle" type="button" aria-label="メニューを開閉" aria-expanded="false">
+      <span class="menu-toggle__bar"></span>
+      <span class="menu-toggle__bar"></span>
+      <span class="menu-toggle__bar"></span>
+    </button>
+    <nav class="app-header__nav">
+      <a href="/platform/tenants" class="nav-link">テナント一覧</a>
       <a href="/password/change" class="nav-link">パスワード変更</a>
       <form method="post" action="/logout" class="nav-form">
         <input type="hidden" name="_csrf" value="<%= csrfToken %>">
@@ -114,7 +125,13 @@
                       <input type="hidden" name="_csrf" value="<%= csrfToken %>">
                       <% if (tenant.status === 'active') { %>
                         <input type="hidden" name="action" value="deactivate">
-                        <button type="submit" class="btn danger">停止</button>
+                        <button
+                          type="submit"
+                          class="btn danger"
+                          data-confirm-message="テナント「<%= tenant.name || '名称未設定' %>」を停止します。よろしいですか？"
+                        >
+                          停止
+                        </button>
                       <% } else { %>
                         <input type="hidden" name="action" value="activate">
                         <button type="submit" class="btn secondary">再開</button>
@@ -129,5 +146,6 @@
       </div>
     </section>
   </main>
+  <script src="/header.js" defer></script>
 </body>
 </html>
