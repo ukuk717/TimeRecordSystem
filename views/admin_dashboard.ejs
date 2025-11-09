@@ -127,16 +127,27 @@
                   <td><%= employee.email || '未設定' %></td>
                   <td><span class="status-badge success">有効</span></td>
                   <td>
-                    <form
-                      method="post"
-                      action="/admin/employees/<%= employee.id %>/status"
-                      class="form-inline"
-                      data-confirm-message="従業員「<%= employee.username %>」のアカウントを無効化します。よろしいですか？"
-                    >
-                      <input type="hidden" name="_csrf" value="<%= csrfToken %>">
-                      <input type="hidden" name="action" value="deactivate">
-                      <button type="submit" class="btn danger">無効化</button>
-                    </form>
+                    <div class="table-actions">
+                      <form
+                        method="post"
+                        action="/admin/employees/<%= employee.id %>/status"
+                        class="form-inline"
+                        data-confirm-message="従業員「<%= employee.username %>」のアカウントを無効化します。よろしいですか？"
+                      >
+                        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                        <input type="hidden" name="action" value="deactivate">
+                        <button type="submit" class="btn danger">無効化</button>
+                      </form>
+                      <form
+                        method="post"
+                        action="/admin/employees/<%= employee.id %>/mfa/reset"
+                        class="form-inline"
+                        data-confirm-message="従業員「<%= employee.username %>」の多要素認証をリセットします。よろしいですか？"
+                      >
+                        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                        <button type="submit" class="btn secondary">2FAリセット</button>
+                      </form>
+                    </div>
                   </td>
                 </tr>
               <% }); %>
@@ -165,11 +176,22 @@
                   <td><%= employee.email || '未設定' %></td>
                   <td><%= employee.deactivatedAtDisplay || '-' %></td>
                   <td>
-                    <form method="post" action="/admin/employees/<%= employee.id %>/status" class="form-inline">
-                      <input type="hidden" name="_csrf" value="<%= csrfToken %>">
-                      <input type="hidden" name="action" value="activate">
-                      <button type="submit" class="btn secondary">再有効化</button>
-                    </form>
+                    <div class="table-actions">
+                      <form method="post" action="/admin/employees/<%= employee.id %>/status" class="form-inline">
+                        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                        <input type="hidden" name="action" value="activate">
+                        <button type="submit" class="btn secondary">再有効化</button>
+                      </form>
+                      <form
+                        method="post"
+                        action="/admin/employees/<%= employee.id %>/mfa/reset"
+                        class="form-inline"
+                        data-confirm-message="従業員「<%= employee.username %>」の多要素認証をリセットします。よろしいですか？"
+                      >
+                        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                        <button type="submit" class="btn">2FAリセット</button>
+                      </form>
+                    </div>
                   </td>
                 </tr>
               <% }); %>
@@ -182,3 +204,5 @@
   <script src="/header.js" defer></script>
 </body>
 </html>
+
+

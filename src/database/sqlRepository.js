@@ -22,6 +22,29 @@ function normalizeRow(row) {
   return normalized;
 }
 
+function parseJson(value) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  try {
+    return JSON.parse(value);
+  } catch (error) {
+    return null;
+  }
+}
+
+function mapMfaRow(row) {
+  const normalized = normalizeRow(row);
+  if (!normalized) {
+    return normalized;
+  }
+  if ('config_json' in normalized) {
+    normalized.config = parseJson(normalized.config_json);
+    delete normalized.config_json;
+  }
+  return normalized;
+}
+
 function toDbBool(value) {
   return Boolean(value);
 }
@@ -649,6 +672,130 @@ class SqlRepository {
       .orderBy('start_time', 'desc')
       .limit(limit);
     return rows.map(normalizeRow);
+  }
+
+  async listMfaMethodsByUser(userId) {
+    await this.ensureInitialized();
+    const rows = await this.knex('user_mfa_methods').where({ user_id: userId }).orderBy('type', 'asc');
+    return rows.map(mapMfaRow);
+  }
+
+  async getMfaMethodByUserAndType(userId, type) {
+    await this.ensureInitialized();
+    const row = await this.knex('user_mfa_methods').where({ user_id: userId, type }).first();
+    return mapMfaRow(row);
+  }
+
+  async getVerifiedMfaMethod(userId, type) {
+    await this.ensureInitialized();
+    const row = await this.knex('user_mfa_methods')
+      .where({ user_id: userId, type, is_verified: true })
+      .first();
+    return mapMfaRow(row);
+  }
+
+  async createMfaMethod({ userId, type, secret = null, config = null, isVerified = false }) {
+    await this.ensureInitialized();
+    const payload = {
+      user_id: userId,
+      type,
+      secret,
+      config_json: config ? JSON.stringify(config) : null,
+      is_verified: toDbBool(isVerified),
+      verified_at: isVerified ? isoNow() : null,
+      last_used_at: null,
+      created_at: isoNow(),
+      updated_at: isoNow(),
+    };
+    const row = await this.insertAndFetch('user_mfa_methods', payload);
+    return mapMfaRow(row);
+  }
+
+  async updateMfaMethod(id, updates = {}) {
+    await this.ensureInitialized();
+    const payload = {
+      updated_at: isoNow(),
+    };
+    if (Object.prototype.hasOwnProperty.call(updates, 'secret')) {
+      payload.secret = updates.secret;
+    }
+    if (Object.prototype.hasOwnProperty.call(updates, 'config')) {
+      payload.config_json = updates.config ? JSON.stringify(updates.config) : null;
+    }
+    if (Object.prototype.hasOwnProperty.call(updates, 'isVerified')) {
+      payload.is_verified = toDbBool(updates.isVerified);
+      payload.verified_at = updates.isVerified ? isoNow() : null;
+      if (!updates.isVerified) {
+        payload.last_used_at = null;
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(updates, 'verifiedAt')) {
+      payload.verified_at = updates.verifiedAt;
+    }
+    if (Object.prototype.hasOwnProperty.call(updates, 'lastUsedAt')) {
+      payload.last_used_at = updates.lastUsedAt;
+    }
+    await this.knex('user_mfa_methods').where({ id }).update(payload);
+    const row = await this.knex('user_mfa_methods').where({ id }).first();
+    return mapMfaRow(row);
+  }
+
+  async deleteMfaMethodsByUserAndType(userId, type) {
+    await this.ensureInitialized();
+    await this.knex('user_mfa_methods').where({ user_id: userId, type }).del();
+  }
+
+  async touchMfaMethodUsed(id) {
+    await this.ensureInitialized();
+    const timestamp = isoNow();
+    await this.knex('user_mfa_methods').where({ id }).update({
+      last_used_at: timestamp,
+      updated_at: timestamp,
+    });
+  }
+
+  async deleteRecoveryCodesByUser(userId) {
+    await this.ensureInitialized();
+    await this.knex('user_mfa_recovery_codes').where({ user_id: userId }).del();
+  }
+
+  async createRecoveryCodes(userId, codeHashes = []) {
+    if (!Array.isArray(codeHashes) || codeHashes.length === 0) {
+      return;
+    }
+    await this.ensureInitialized();
+    const nowIso = isoNow();
+    const records = codeHashes.map((codeHash) => ({
+      user_id: userId,
+      code_hash: codeHash,
+      used_at: null,
+      created_at: nowIso,
+    }));
+    await this.knex('user_mfa_recovery_codes').insert(records);
+  }
+
+  async findRecoveryCode(userId, codeHash) {
+    await this.ensureInitialized();
+    const row = await this.knex('user_mfa_recovery_codes')
+      .where({ user_id: userId, code_hash: codeHash })
+      .first();
+    return normalizeRow(row);
+  }
+
+  async findUsableRecoveryCode(userId, codeHash) {
+    await this.ensureInitialized();
+    const row = await this.knex('user_mfa_recovery_codes')
+      .where({ user_id: userId, code_hash: codeHash })
+      .whereNull('used_at')
+      .first();
+    return normalizeRow(row);
+  }
+
+  async markRecoveryCodeUsed(id) {
+    await this.ensureInitialized();
+    await this.knex('user_mfa_recovery_codes').where({ id }).update({
+      used_at: isoNow(),
+    });
   }
 }
 

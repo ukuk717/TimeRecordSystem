@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>多要素認証 | 勤怠管理システム</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <div class="app-header__brand">
+      <h1 class="app-header__title">
+        <a href="/" class="app-header__home-link">勤怠管理システム</a>
+      </h1>
+    </div>
+  </header>
+  <main class="container auth-container">
+    <% if (flash) { %>
+      <div class="flash <%= flash.type %>"><%= flash.message %></div>
+    <% } %>
+    <section class="card">
+      <h2>多要素認証</h2>
+      <p>
+        <strong><%= factorLabel %></strong> のコードを入力してください。
+        <% if (email) { %>
+          対象アカウント: <code><%= email %></code>
+        <% } %>
+      </p>
+
+      <div class="mfa-login-forms">
+        <div class="mfa-login-panel">
+          <h3>認証アプリのコード</h3>
+          <form method="post" action="/login/mfa" class="form">
+            <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+            <input type="hidden" name="authMode" value="totp">
+            <label class="form-field">
+              <span>認証コード</span>
+              <input
+                type="text"
+                name="token"
+                inputmode="numeric"
+                pattern="[0-9]*"
+                maxlength="8"
+                required
+                autocomplete="one-time-code"
+              >
+            </label>
+            <button type="submit" class="btn primary">認証する</button>
+          </form>
+        </div>
+
+        <div class="mfa-login-panel">
+          <h3>バックアップコードを使用</h3>
+          <form method="post" action="/login/mfa" class="form">
+            <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+            <input type="hidden" name="authMode" value="backup">
+            <label class="form-field">
+              <span>バックアップコード（1回限り）</span>
+              <input
+                type="text"
+                name="backupCode"
+                inputmode="text"
+                maxlength="16"
+                required
+                autocomplete="one-time-code"
+                placeholder="例: ABCDE-FGHIJ"
+              >
+            </label>
+            <p class="form-note">
+              認証アプリを利用できない場合にのみ使用してください。コードは使用後に失効します。
+            </p>
+            <button type="submit" class="btn secondary">バックアップコードで認証</button>
+          </form>
+        </div>
+      </div>
+
+      <p class="form-note">
+        バックアップコードがすべて無効になった場合は、テナント管理者に連絡し、従業員一覧の「2FAリセット」を実行してもらってから再設定してください。
+      </p>
+      <div class="form-links">
+        <a class="link" href="/login/mfa/cancel">ログイン画面へ戻る</a>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

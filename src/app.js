@@ -51,6 +51,17 @@ const {
   getPayrollRecordById,
   getLatestPayrollRecordForDate,
   deleteTenantById,
+  listMfaMethodsByUser,
+  getMfaMethodByUserAndType,
+  getVerifiedMfaMethod,
+  createMfaMethod,
+  updateMfaMethod,
+  deleteMfaMethodsByUserAndType,
+  touchMfaMethodUsed,
+  deleteRecoveryCodesByUser,
+  createRecoveryCodes,
+  findUsableRecoveryCode,
+  markRecoveryCodeUsed,
 } = require('./db');
 const {
   validatePassword,
@@ -76,6 +87,19 @@ const {
   parseDateTimeInput,
   formatDateKey,
 } = require('./utils/time');
+const {
+  MFA_TYPES,
+  MFA_CHANNELS,
+  getMfaIssuer,
+  generateTotpSecret,
+  buildTotpKeyUri,
+  verifyTotpToken,
+  generateQrCodeDataUrl,
+  getMfaChannelLabel,
+  generateRecoveryCodes,
+  hashRecoveryCode,
+  normalizeRecoveryCodeInput,
+} = require('./services/mfaService');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -126,6 +150,9 @@ const ROLES = {
   TENANT: 'tenant_admin',
   EMPLOYEE: 'employee',
 };
+const MFA_CHALLENGE_TTL_MS = 10 * 60 * 1000;
+const MFA_SETTINGS_PATH = '/password/change#mfa';
+const MFA_ISSUER = getMfaIssuer();
 
 const USER_STATUS = {
   ACTIVE: 'active',
@@ -511,6 +538,8 @@ app.use((req, res, next) => {
   res.locals.flash = req.session.flash || null;
   res.locals.csrfToken = csrfToken;
   delete req.session.flash;
+  res.locals.mfaBackupCodes = req.session.mfaBackupCodes || null;
+  delete req.session.mfaBackupCodes;
   next();
 });
 
@@ -571,8 +600,111 @@ function setFlash(req, type, message) {
   req.session.flash = { type, message };
 }
 
+function getMfaChallenge(req) {
+  if (!req.session) {
+    return null;
+  }
+  return req.session.pendingMfa || null;
+}
+
+function setMfaChallenge(req, payload) {
+  if (!req.session) {
+    return;
+  }
+  req.session.pendingMfa = payload;
+}
+
+function clearPendingMfa(req) {
+  if (req.session && req.session.pendingMfa) {
+    delete req.session.pendingMfa;
+  }
+}
+
+function isMfaChallengeExpired(challenge) {
+  if (!challenge || !challenge.issuedAt) {
+    return true;
+  }
+  return Date.now() - challenge.issuedAt > MFA_CHALLENGE_TTL_MS;
+}
+
+function normalizeOtpToken(input) {
+  return String(input || '')
+    .trim()
+    .replace(/\s+/g, '')
+    .replace(/[^0-9]/g, '');
+}
+
+function rememberBackupCodes(req, codes) {
+  if (!req.session) {
+    return;
+  }
+  req.session.mfaBackupCodes = Array.isArray(codes) ? codes : [];
+}
+
+async function createRecoveryCodesForUser(req, userId, count = 10) {
+  await deleteRecoveryCodesByUser(userId);
+  const codes = generateRecoveryCodes(count);
+  const hashed = codes.map((code) => hashRecoveryCode(code));
+  await createRecoveryCodes(userId, hashed);
+  rememberBackupCodes(req, codes);
+  return codes;
+}
+
 function normalizeEmail(email) {
   return (email || '').trim().toLowerCase();
+}
+
+async function ensureTenantActiveForUser(user) {
+  if (!user || !user.tenant_id) {
+    return { ok: true, tenant: null };
+  }
+  const tenant = await getTenantById(user.tenant_id);
+  if (!tenant || tenant.status !== TENANT_STATUS.ACTIVE) {
+    return {
+      ok: false,
+      message: '所属テナントが利用停止中のためログインできません。管理者にお問い合わせください。',
+    };
+  }
+  return { ok: true, tenant };
+}
+
+function applyUserSession(req, user, tenant) {
+  req.session.user = {
+    id: user.id,
+    username: user.username,
+    role: user.role,
+    tenantId: user.tenant_id,
+    status: user.status,
+    tenantStatus: tenant ? tenant.status : null,
+  };
+  if (user.must_change_password) {
+    req.session.user.mustChangePassword = true;
+  }
+}
+
+async function completeLogin(req, user, options = {}) {
+  const tenantResult = await ensureTenantActiveForUser(user);
+  if (!tenantResult.ok) {
+    setFlash(req, 'error', tenantResult.message);
+    return { success: false, redirectTo: '/login' };
+  }
+  applyUserSession(req, user, tenantResult.tenant);
+  let redirectTo = '/';
+  let flashType = 'success';
+  let flashMessage = 'ログインしました。';
+  if (user.must_change_password) {
+    redirectTo = '/password/change';
+    flashType = 'info';
+    flashMessage = '初回ログインのためパスワードを変更してください。';
+  }
+  if (options.overrideFlash) {
+    flashType = options.overrideFlash.type || flashType;
+    flashMessage = options.overrideFlash.message || flashMessage;
+  } else if (options.appendFlashMessage) {
+    flashMessage = `${flashMessage} ${options.appendFlashMessage}`.trim();
+  }
+  setFlash(req, flashType, flashMessage);
+  return { success: true, redirectTo };
 }
 
 async function generateTenantUid() {
@@ -752,6 +884,14 @@ app.get('/login', (req, res) => {
   if (req.session.user) {
     return res.redirect('/');
   }
+  const challenge = getMfaChallenge(req);
+  if (challenge) {
+    if (isMfaChallengeExpired(challenge)) {
+      clearPendingMfa(req);
+    } else {
+      return res.redirect('/login/mfa');
+    }
+  }
   return res.render('login', {
     minPasswordLength: PASSWORD_MIN_LENGTH,
     lockLimit: LOGIN_FAILURE_LIMIT,
@@ -760,6 +900,7 @@ app.get('/login', (req, res) => {
 });
 
 app.post('/login', async (req, res) => {
+  clearPendingMfa(req);
   const email = normalizeEmail(req.body.email);
   const password = (req.body.password || '').trim();
 
@@ -814,36 +955,131 @@ app.post('/login', async (req, res) => {
     return res.redirect('/login');
   }
 
-  let userTenant = null;
-  if (user.tenant_id) {
-    userTenant = await getTenantById(user.tenant_id);
-    if (!userTenant || userTenant.status !== TENANT_STATUS.ACTIVE) {
-      setFlash(req, 'error', '所属テナントが利用停止中のためログインできません。管理者にお問い合わせください。');
-      return res.redirect('/login');
-    }
-  }
-
   await resetLoginFailures(user.id);
-  req.session.user = {
-    id: user.id,
-    username: user.username,
-    role: user.role,
-    tenantId: user.tenant_id,
-    status: user.status,
-    tenantStatus: userTenant ? userTenant.status : null,
-  };
 
-  if (user.must_change_password) {
-    req.session.user.mustChangePassword = true;
-    setFlash(req, 'info', '初回ログインのためパスワードを変更してください。');
-    return res.redirect('/password/change');
+  const verifiedTotp = await getVerifiedMfaMethod(user.id, MFA_TYPES.TOTP);
+  if (verifiedTotp) {
+    setMfaChallenge(req, {
+      userId: user.id,
+      email: user.email,
+      methods: [MFA_TYPES.TOTP],
+      issuedAt: Date.now(),
+    });
+    setFlash(req, 'info', '認証アプリのコードを入力してください。');
+    return res.redirect('/login/mfa');
   }
 
-  setFlash(req, 'success', 'ログインしました。');
-  return res.redirect('/');
+  const outcome = await completeLogin(req, user);
+  return res.redirect(outcome.redirectTo);
+});
+
+app.get('/login/mfa', (req, res) => {
+  if (req.session.user) {
+    return res.redirect('/');
+  }
+  const challenge = getMfaChallenge(req);
+  if (!challenge) {
+    setFlash(req, 'error', '多要素認証の手続きが見つかりません。再度ログインしてください。');
+    return res.redirect('/login');
+  }
+  if (isMfaChallengeExpired(challenge)) {
+    clearPendingMfa(req);
+    setFlash(req, 'error', '多要素認証の有効時間が切れました。もう一度ログインしてください。');
+    return res.redirect('/login');
+  }
+  const factorLabel = (challenge.methods || []).map(getMfaChannelLabel).join(' / ');
+  return res.render('login_mfa', {
+    factorLabel: factorLabel || '多要素認証',
+    email: challenge.email || '',
+  });
+});
+
+app.get('/login/mfa/cancel', (req, res) => {
+  clearPendingMfa(req);
+  setFlash(req, 'info', '多要素認証をキャンセルしました。再度ログインしてください。');
+  return res.redirect('/login');
+});
+
+app.post('/login/mfa', async (req, res) => {
+  if (req.session.user) {
+    return res.redirect('/');
+  }
+  const challenge = getMfaChallenge(req);
+  if (!challenge) {
+    setFlash(req, 'error', '多要素認証の手続きが見つかりません。再度ログインしてください。');
+    return res.redirect('/login');
+  }
+  if (isMfaChallengeExpired(challenge)) {
+    clearPendingMfa(req);
+    setFlash(req, 'error', '多要素認証の有効時間が切れました。もう一度ログインしてください。');
+    return res.redirect('/login');
+  }
+  const authMode = (req.body.authMode || '').toLowerCase();
+  const token = normalizeOtpToken(req.body.token);
+  const backupCodeInput = normalizeRecoveryCodeInput(req.body.backupCode || '');
+  const user = await getUserById(challenge.userId);
+  if (!user || user.status !== USER_STATUS.ACTIVE) {
+    clearPendingMfa(req);
+    setFlash(req, 'error', 'ユーザー情報を確認できませんでした。再度ログインしてください。');
+    return res.redirect('/login');
+  }
+
+  // 現状は TOTP のみ対応しており、将来的にメール/SMS OTP を追加できる構造にしている。
+  const requiredMethods = challenge.methods || [];
+  const useBackupMode = authMode === 'backup' || (!token && backupCodeInput);
+  if (useBackupMode) {
+    if (!backupCodeInput) {
+      setFlash(req, 'error', 'バックアップコードを入力してください。');
+      return res.redirect('/login/mfa');
+    }
+    const hashedCode = hashRecoveryCode(backupCodeInput);
+    const recovery = await findUsableRecoveryCode(user.id, hashedCode);
+    if (!recovery) {
+      setFlash(req, 'error', 'バックアップコードが正しくないか、すでに使用済みです。');
+      return res.redirect('/login/mfa');
+    }
+    await markRecoveryCodeUsed(recovery.id);
+    clearPendingMfa(req);
+    const outcome = await completeLogin(req, user, {
+      appendFlashMessage: 'バックアップコードを使用しました。新しいバックアップコードを再発行してください。',
+    });
+    return res.redirect(outcome.redirectTo);
+  }
+
+  if (!token) {
+    setFlash(req, 'error', '認証コードを入力してください。');
+    return res.redirect('/login/mfa');
+  }
+
+  // eslint-disable-next-line no-restricted-syntax
+  for (const methodType of requiredMethods) {
+    if (methodType === MFA_TYPES.TOTP) {
+      const verifiedTotp = await getVerifiedMfaMethod(user.id, MFA_TYPES.TOTP);
+      if (!verifiedTotp) {
+        clearPendingMfa(req);
+        setFlash(req, 'error', '多要素認証の設定が変更されました。再度ログインしてください。');
+        return res.redirect('/login');
+      }
+      const valid = verifyTotpToken({ secret: verifiedTotp.secret, token });
+      if (!valid) {
+        setFlash(req, 'error', '認証コードが正しくありません。');
+        return res.redirect('/login/mfa');
+      }
+      await touchMfaMethodUsed(verifiedTotp.id);
+      continue;
+    }
+    clearPendingMfa(req);
+    setFlash(req, 'error', '未対応の多要素認証方式です。');
+    return res.redirect('/login');
+  }
+
+  clearPendingMfa(req);
+  const outcome = await completeLogin(req, user);
+  return res.redirect(outcome.redirectTo);
 });
 
 app.post('/logout', (req, res) => {
+  clearPendingMfa(req);
   req.session.destroy(() => {
     res.redirect('/login');
   });
@@ -1062,10 +1298,49 @@ app.post('/password/reset/:token', async (req, res) => {
   return res.redirect('/login');
 });
 
-app.get('/password/change', requireRole(ROLES.PLATFORM, ROLES.TENANT, ROLES.EMPLOYEE), (req, res) => {
+app.get('/password/change', requireRole(ROLES.PLATFORM, ROLES.TENANT, ROLES.EMPLOYEE), async (req, res) => {
+  const user = await getUserById(req.session.user.id);
+  if (!user) {
+    delete req.session.user;
+    setFlash(req, 'error', 'ユーザー情報を再取得できませんでした。再度ログインしてください。');
+    return res.redirect('/login');
+  }
+  const methods = await listMfaMethodsByUser(req.session.user.id);
+  const totpActive = methods.find((method) => method.type === MFA_TYPES.TOTP && method.is_verified);
+  const totpPending = methods.find((method) => method.type === MFA_TYPES.TOTP && !method.is_verified);
+
+  let pendingSetup = null;
+  if (totpPending && totpPending.secret) {
+    const config = totpPending.config || {};
+    const labelSource = config.label || user?.email || user?.username || `user-${req.session.user.id}`;
+    const issuer = config.issuer || MFA_ISSUER;
+    const otpauthUrl = buildTotpKeyUri({
+      secret: totpPending.secret,
+      label: labelSource,
+      issuer,
+    });
+    const qrCodeDataUrl = await generateQrCodeDataUrl(otpauthUrl);
+    pendingSetup = {
+      secret: totpPending.secret,
+      otpauthUrl,
+      qrCodeDataUrl,
+      issuer,
+      label: labelSource,
+    };
+  }
+
   res.render('password_change', {
     action: '/password/change',
     minPasswordLength: PASSWORD_MIN_LENGTH,
+    mfa: {
+      supportedChannels: MFA_CHANNELS,
+      totp: {
+        isEnabled: Boolean(totpActive),
+        verifiedAtDisplay: formatDisplayDateTime(totpActive?.verified_at),
+        lastUsedAtDisplay: formatDisplayDateTime(totpActive?.last_used_at),
+        pendingSetup,
+      },
+    },
   });
 });
 
@@ -1100,6 +1375,116 @@ app.post(
     }
     setFlash(req, 'success', 'パスワードを変更しました。');
     return res.redirect('/');
+  }
+);
+
+app.post(
+  '/settings/mfa/totp/start',
+  requireRole(ROLES.PLATFORM, ROLES.TENANT, ROLES.EMPLOYEE),
+  async (req, res) => {
+    const user = await getUserById(req.session.user.id);
+    if (!user) {
+      delete req.session.user;
+      setFlash(req, 'error', 'ユーザー情報を再取得できませんでした。再度ログインしてください。');
+      return res.redirect('/login');
+    }
+    const existing = await getMfaMethodByUserAndType(user.id, MFA_TYPES.TOTP);
+    if (existing && existing.is_verified) {
+      setFlash(req, 'info', '認証アプリによる多要素認証はすでに有効です。無効化してから再設定してください。');
+      return res.redirect(MFA_SETTINGS_PATH);
+    }
+    const secret = generateTotpSecret();
+    const totpConfig = {
+      issuer: MFA_ISSUER,
+      label: user.email || user.username || `user-${user.id}`,
+    };
+    if (existing) {
+      await updateMfaMethod(existing.id, {
+        secret,
+        config: totpConfig,
+        isVerified: false,
+        lastUsedAt: null,
+      });
+    } else {
+      await createMfaMethod({
+        userId: user.id,
+        type: MFA_TYPES.TOTP,
+        secret,
+        config: totpConfig,
+        isVerified: false,
+      });
+    }
+    setFlash(req, 'success', '認証アプリのセットアップを開始しました。QRコードを読み取り、コードを入力してください。');
+    return res.redirect(MFA_SETTINGS_PATH);
+  }
+);
+
+app.post(
+  '/settings/mfa/totp/verify',
+  requireRole(ROLES.PLATFORM, ROLES.TENANT, ROLES.EMPLOYEE),
+  async (req, res) => {
+    const userId = req.session.user.id;
+    const pending = await getMfaMethodByUserAndType(userId, MFA_TYPES.TOTP);
+    if (!pending || pending.is_verified) {
+      setFlash(req, 'error', 'セットアップ情報が見つかりません。最初からやり直してください。');
+      return res.redirect(MFA_SETTINGS_PATH);
+    }
+    const token = normalizeOtpToken(req.body.verificationCode);
+    if (!token) {
+      setFlash(req, 'error', '認証コードを入力してください。');
+      return res.redirect(MFA_SETTINGS_PATH);
+    }
+    const valid = verifyTotpToken({ secret: pending.secret, token });
+    if (!valid) {
+      setFlash(req, 'error', '認証コードが正しくありません。');
+      return res.redirect(MFA_SETTINGS_PATH);
+    }
+    await updateMfaMethod(pending.id, { isVerified: true });
+    await createRecoveryCodesForUser(req, userId);
+    setFlash(
+      req,
+      'success',
+      '認証アプリによる多要素認証を有効化しました。バックアップコードを安全な場所に保管してください。'
+    );
+    return res.redirect(MFA_SETTINGS_PATH);
+  }
+);
+
+app.post(
+  '/settings/mfa/totp/disable',
+  requireRole(ROLES.PLATFORM, ROLES.TENANT, ROLES.EMPLOYEE),
+  async (req, res) => {
+    await deleteMfaMethodsByUserAndType(req.session.user.id, MFA_TYPES.TOTP);
+    await deleteRecoveryCodesByUser(req.session.user.id);
+    clearPendingMfa(req);
+    setFlash(req, 'success', '認証アプリによる多要素認証を無効化しました。');
+    return res.redirect(MFA_SETTINGS_PATH);
+  }
+);
+
+app.post(
+  '/settings/mfa/recovery-codes/regenerate',
+  requireRole(ROLES.PLATFORM, ROLES.TENANT, ROLES.EMPLOYEE),
+  async (req, res) => {
+    const user = await getUserById(req.session.user.id);
+    if (!user) {
+      delete req.session.user;
+      setFlash(req, 'error', 'ユーザー情報を再取得できませんでした。再度ログインしてください。');
+      return res.redirect('/login');
+    }
+    const verifiedTotp = await getVerifiedMfaMethod(user.id, MFA_TYPES.TOTP);
+    if (!verifiedTotp) {
+      setFlash(req, 'error', '認証アプリによる多要素認証を有効化してからバックアップコードを再発行してください。');
+      return res.redirect(MFA_SETTINGS_PATH);
+    }
+    const ok = await comparePassword(req.body.currentPassword || '', user.password_hash);
+    if (!ok) {
+      setFlash(req, 'error', '現在のパスワードが正しくありません。');
+      return res.redirect(MFA_SETTINGS_PATH);
+    }
+    await createRecoveryCodesForUser(req, user.id);
+    setFlash(req, 'success', 'バックアップコードを再発行しました。新しいコードのみが有効です。');
+    return res.redirect(MFA_SETTINGS_PATH);
   }
 );
 
@@ -1291,6 +1676,25 @@ app.post(
     } else {
       setFlash(req, 'error', '不明な操作です。');
     }
+    res.redirect('/admin');
+  }
+);
+
+app.post(
+  '/admin/employees/:userId/mfa/reset',
+  requireRole(ROLES.TENANT),
+  ensureTenantContext,
+  async (req, res) => {
+    const employee = await getEmployeeForTenantAdmin(req, res);
+    if (!employee) {
+      return;
+    }
+    await deleteMfaMethodsByUserAndType(employee.id, MFA_TYPES.TOTP);
+    await deleteRecoveryCodesByUser(employee.id);
+    if (req.session.pendingMfa && req.session.pendingMfa.userId === employee.id) {
+      clearPendingMfa(req);
+    }
+    setFlash(req, 'success', `従業員「${employee.username}」の多要素認証をリセットしました。`);
     res.redirect('/admin');
   }
 );
