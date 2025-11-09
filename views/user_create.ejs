@@ -20,7 +20,10 @@
       <span class="menu-toggle__bar"></span>
     </button>
     <nav class="app-header__nav">
-      <a href="/admin" class="nav-link">管理者メニューへ戻る</a>
+      <a href="/admin" class="nav-link">ダッシュボード</a>
+      <a href="/admin/payrolls" class="nav-link">給与明細送信</a>
+      <a href="/admin/role-codes" class="nav-link">ロールコード管理</a>
+      <a href="/password/change" class="nav-link">パスワード変更</a>
       <form method="post" action="/logout" class="nav-form">
         <input type="hidden" name="_csrf" value="<%= csrfToken %>">
         <button type="submit" class="btn link">ログアウト</button>
