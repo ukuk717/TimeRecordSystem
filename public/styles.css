@@ -217,6 +217,19 @@ body.menu-open {
   color: #666666;
 }
 
+.form-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.95rem;
+  margin-top: 0.5rem;
+}
+
+.form-checkbox input {
+  width: auto;
+  margin: 0;
+}
+
 .form-actions {
   display: flex;
   gap: 0.75rem;

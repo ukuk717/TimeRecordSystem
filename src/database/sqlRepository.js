@@ -797,6 +797,44 @@ class SqlRepository {
       used_at: isoNow(),
     });
   }
+
+  async createTrustedDevice({ userId, tokenHash, deviceInfo = null, expiresAt }) {
+    await this.ensureInitialized();
+    const payload = {
+      user_id: userId,
+      token_hash: tokenHash,
+      device_info: deviceInfo,
+      expires_at: expiresAt,
+      last_used_at: null,
+      created_at: isoNow(),
+    };
+    return this.insertAndFetch('user_mfa_trusted_devices', payload);
+  }
+
+  async getTrustedDeviceByToken(userId, tokenHash) {
+    await this.ensureInitialized();
+    const row = await this.knex('user_mfa_trusted_devices')
+      .where({ user_id: userId, token_hash: tokenHash })
+      .first();
+    return normalizeRow(row);
+  }
+
+  async touchTrustedDevice(id) {
+    await this.ensureInitialized();
+    await this.knex('user_mfa_trusted_devices')
+      .where({ id })
+      .update({ last_used_at: isoNow() });
+  }
+
+  async deleteTrustedDeviceById(id) {
+    await this.ensureInitialized();
+    await this.knex('user_mfa_trusted_devices').where({ id }).del();
+  }
+
+  async deleteTrustedDevicesByUser(userId) {
+    await this.ensureInitialized();
+    await this.knex('user_mfa_trusted_devices').where({ user_id: userId }).del();
+  }
 }
 
 function createSqlRepository() {

@@ -77,4 +77,9 @@ module.exports = {
   findRecoveryCode: bind('findRecoveryCode'),
   findUsableRecoveryCode: bind('findUsableRecoveryCode'),
   markRecoveryCodeUsed: bind('markRecoveryCodeUsed'),
+  createTrustedDevice: bind('createTrustedDevice'),
+  getTrustedDeviceByToken: bind('getTrustedDeviceByToken'),
+  touchTrustedDevice: bind('touchTrustedDevice'),
+  deleteTrustedDeviceById: bind('deleteTrustedDeviceById'),
+  deleteTrustedDevicesByUser: bind('deleteTrustedDevicesByUser'),
 };

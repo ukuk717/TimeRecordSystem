@@ -45,6 +45,10 @@
                 autocomplete="one-time-code"
               >
             </label>
+            <label class="form-checkbox">
+              <input type="checkbox" name="rememberDevice" value="on">
+              <span>このデバイスを<%= trustDurationDays || 30 %>日間記憶する（共有端末では選択しないでください）</span>
+            </label>
             <button type="submit" class="btn primary">認証する</button>
           </form>
         </div>

@@ -62,6 +62,11 @@ const {
   createRecoveryCodes,
   findUsableRecoveryCode,
   markRecoveryCodeUsed,
+  createTrustedDevice,
+  getTrustedDeviceByToken,
+  touchTrustedDevice,
+  deleteTrustedDeviceById,
+  deleteTrustedDevicesByUser,
 } = require('./db');
 const {
   validatePassword,
@@ -153,6 +158,10 @@ const ROLES = {
 const MFA_CHALLENGE_TTL_MS = 10 * 60 * 1000;
 const MFA_SETTINGS_PATH = '/password/change#mfa';
 const MFA_ISSUER = getMfaIssuer();
+const MFA_TRUST_COOKIE_NAME = 'trs_dev';
+const MFA_TRUST_DURATION_DAYS = Number.parseInt(process.env.MFA_TRUST_TTL_DAYS || '30', 10) || 30;
+const MFA_TRUST_DURATION_MS = MFA_TRUST_DURATION_DAYS * 24 * 60 * 60 * 1000;
+const TRUSTED_DEVICE_TOKEN_BYTES = 32;
 
 const USER_STATUS = {
   ACTIVE: 'active',
@@ -564,6 +573,28 @@ app.use((req, res, next) => {
   return res.redirect('/password/change');
 });
 
+app.use((req, res, next) => {
+  const user = req.session.user;
+  if (!user || !user.mustEnableMfa) {
+    return next();
+  }
+  const ext = path.extname(req.path || '');
+  if (
+    ext ||
+    req.path === '/password/change' ||
+    req.path === '/logout' ||
+    req.path.startsWith('/settings/mfa/') ||
+    req.path.startsWith('/password/reset')
+  ) {
+    return next();
+  }
+  if (req.method !== 'GET') {
+    return res.redirect(MFA_SETTINGS_PATH);
+  }
+  setFlash(req, 'info', 'テナント管理者は多要素認証を有効化してください。');
+  return res.redirect(MFA_SETTINGS_PATH);
+});
+
 app.use(async (req, res, next) => {
   if (!req.session.user) {
     next();
@@ -650,6 +681,113 @@ async function createRecoveryCodesForUser(req, userId, count = 10) {
   return codes;
 }
 
+function requiresMfaForUser(user) {
+  return Boolean(user && user.role === ROLES.TENANT);
+}
+
+function parseCookies(req) {
+  const header = req.headers && req.headers.cookie;
+  if (!header) {
+    return {};
+  }
+  return header.split(';').reduce((acc, part) => {
+    const [rawKey, ...rest] = part.split('=');
+    if (!rawKey) {
+      return acc;
+    }
+    const key = rawKey.trim();
+    if (!key) {
+      return acc;
+    }
+    const value = rest.join('=').trim();
+    acc[key] = decodeURIComponent(value || '');
+    return acc;
+  }, {});
+}
+
+function getCookieValue(req, name) {
+  if (!name) {
+    return null;
+  }
+  const cookies = parseCookies(req);
+  return cookies[name] || null;
+}
+
+function hashTrustedDeviceToken(token) {
+  return crypto.createHash('sha256').update(String(token || '')).digest('hex');
+}
+
+function getTrustedDeviceToken(req) {
+  return getCookieValue(req, MFA_TRUST_COOKIE_NAME);
+}
+
+function shouldUseSecureCookie(req) {
+  const setting = resolveSessionCookieSecure();
+  if (setting === 'auto') {
+    const forwardedProto = (req.headers['x-forwarded-proto'] || '').split(',')[0].trim().toLowerCase();
+    return Boolean(req.secure || forwardedProto === 'https');
+  }
+  return Boolean(setting);
+}
+
+function buildTrustCookieOptions(req, maxAgeMs = null) {
+  const options = {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: shouldUseSecureCookie(req),
+    path: '/',
+  };
+  if (Number.isFinite(maxAgeMs) && maxAgeMs > 0) {
+    options.maxAge = maxAgeMs;
+  }
+  return options;
+}
+
+function setTrustedDeviceCookie(req, res, token, expiresAtIso) {
+  if (!req || !res || typeof res.cookie !== 'function' || !token) {
+    return;
+  }
+  const expiresMs = Date.parse(expiresAtIso) - Date.now();
+  const maxAge = Number.isFinite(expiresMs) && expiresMs > 0 ? expiresMs : MFA_TRUST_DURATION_MS;
+  res.cookie(MFA_TRUST_COOKIE_NAME, token, buildTrustCookieOptions(req, maxAge));
+}
+
+function clearTrustedDeviceCookie(req, res) {
+  if (!req || !res || typeof res.clearCookie !== 'function') {
+    return;
+  }
+  res.clearCookie(MFA_TRUST_COOKIE_NAME, buildTrustCookieOptions(req));
+}
+
+function describeDevice(req) {
+  const userAgent = (req.headers['user-agent'] || '').slice(0, 200);
+  const forwarded = (req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+  const ip = forwarded || req.ip || (req.socket && req.socket.remoteAddress) || '';
+  return [userAgent, ip].filter(Boolean).join(' | ').slice(0, 240);
+}
+
+async function issueTrustedDevice(req, res, userId) {
+  try {
+    const token = crypto.randomBytes(TRUSTED_DEVICE_TOKEN_BYTES).toString('hex');
+    const expiresAt = new Date(Date.now() + MFA_TRUST_DURATION_MS).toISOString();
+    const tokenHash = hashTrustedDeviceToken(token);
+    await createTrustedDevice({
+      userId,
+      tokenHash,
+      deviceInfo: describeDevice(req),
+      expiresAt,
+    });
+    setTrustedDeviceCookie(req, res, token, expiresAt);
+    return true;
+  } catch (error) {
+    if (!isTestEnv) {
+      // eslint-disable-next-line no-console
+      console.warn('[mfa] Failed to register trusted device token', error);
+    }
+    return false;
+  }
+}
+
 function normalizeEmail(email) {
   return (email || '').trim().toLowerCase();
 }
@@ -668,7 +806,7 @@ async function ensureTenantActiveForUser(user) {
   return { ok: true, tenant };
 }
 
-function applyUserSession(req, user, tenant) {
+function applyUserSession(req, user, tenant, overrides = {}) {
   req.session.user = {
     id: user.id,
     username: user.username,
@@ -676,6 +814,7 @@ function applyUserSession(req, user, tenant) {
     tenantId: user.tenant_id,
     status: user.status,
     tenantStatus: tenant ? tenant.status : null,
+    ...overrides,
   };
   if (user.must_change_password) {
     req.session.user.mustChangePassword = true;
@@ -955,22 +1094,55 @@ app.post('/login', async (req, res) => {
     return res.redirect('/login');
   }
 
+  let userTenant = null;
+  if (user.tenant_id) {
+    userTenant = await getTenantById(user.tenant_id);
+    if (!userTenant || userTenant.status !== TENANT_STATUS.ACTIVE) {
+      setFlash(req, 'error', '所属テナントが利用停止中のためログインできません。管理者にお問い合わせください。');
+      return res.redirect('/login');
+    }
+  }
+
   await resetLoginFailures(user.id);
 
   const verifiedTotp = await getVerifiedMfaMethod(user.id, MFA_TYPES.TOTP);
-  if (verifiedTotp) {
-    setMfaChallenge(req, {
-      userId: user.id,
-      email: user.email,
-      methods: [MFA_TYPES.TOTP],
-      issuedAt: Date.now(),
-    });
-    setFlash(req, 'info', '認証アプリのコードを入力してください。');
-    return res.redirect('/login/mfa');
+  const requiresMfa = requiresMfaForUser(user);
+  if (requiresMfa && !verifiedTotp) {
+    applyUserSession(req, user, userTenant, { mustEnableMfa: true });
+    clearTrustedDeviceCookie(req, res);
+    setFlash(req, 'info', 'テナント管理者は多要素認証を有効化してください。');
+    return res.redirect(MFA_SETTINGS_PATH);
   }
 
-  const outcome = await completeLogin(req, user);
-  return res.redirect(outcome.redirectTo);
+  if (!verifiedTotp) {
+    const outcome = await completeLogin(req, user);
+    return res.redirect(outcome.redirectTo);
+  }
+
+  const trustedToken = getTrustedDeviceToken(req);
+  if (trustedToken) {
+    const hashedToken = hashTrustedDeviceToken(trustedToken);
+    const trustedDevice = await getTrustedDeviceByToken(user.id, hashedToken);
+    const expiresAtMs = trustedDevice ? Date.parse(trustedDevice.expires_at) : NaN;
+    if (trustedDevice && Number.isFinite(expiresAtMs) && expiresAtMs > Date.now()) {
+      await touchTrustedDevice(trustedDevice.id);
+      const outcome = await completeLogin(req, user);
+      return res.redirect(outcome.redirectTo);
+    }
+    if (trustedDevice) {
+      await deleteTrustedDeviceById(trustedDevice.id);
+    }
+    clearTrustedDeviceCookie(req, res);
+  }
+
+  setMfaChallenge(req, {
+    userId: user.id,
+    email: user.email,
+    methods: [MFA_TYPES.TOTP],
+    issuedAt: Date.now(),
+  });
+  setFlash(req, 'info', '認証アプリのコードを入力してください。');
+  return res.redirect('/login/mfa');
 });
 
 app.get('/login/mfa', (req, res) => {
@@ -991,6 +1163,7 @@ app.get('/login/mfa', (req, res) => {
   return res.render('login_mfa', {
     factorLabel: factorLabel || '多要素認証',
     email: challenge.email || '',
+    trustDurationDays: MFA_TRUST_DURATION_DAYS,
   });
 });
 
@@ -1017,6 +1190,7 @@ app.post('/login/mfa', async (req, res) => {
   const authMode = (req.body.authMode || '').toLowerCase();
   const token = normalizeOtpToken(req.body.token);
   const backupCodeInput = normalizeRecoveryCodeInput(req.body.backupCode || '');
+  const rememberDevice = req.body.rememberDevice === 'on';
   const user = await getUserById(challenge.userId);
   if (!user || user.status !== USER_STATUS.ACTIVE) {
     clearPendingMfa(req);
@@ -1051,6 +1225,7 @@ app.post('/login/mfa', async (req, res) => {
     return res.redirect('/login/mfa');
   }
 
+  let trustDeviceFailed = false;
   // eslint-disable-next-line no-restricted-syntax
   for (const methodType of requiredMethods) {
     if (methodType === MFA_TYPES.TOTP) {
@@ -1066,6 +1241,12 @@ app.post('/login/mfa', async (req, res) => {
         return res.redirect('/login/mfa');
       }
       await touchMfaMethodUsed(verifiedTotp.id);
+      if (rememberDevice) {
+        const issued = await issueTrustedDevice(req, res, user.id);
+        if (!issued) {
+          trustDeviceFailed = true;
+        }
+      }
       continue;
     }
     clearPendingMfa(req);
@@ -1074,7 +1255,10 @@ app.post('/login/mfa', async (req, res) => {
   }
 
   clearPendingMfa(req);
-  const outcome = await completeLogin(req, user);
+  const completeOptions = trustDeviceFailed
+    ? { appendFlashMessage: 'デバイスの記憶に失敗しました。後でもう一度設定してください。' }
+    : undefined;
+  const outcome = await completeLogin(req, user, completeOptions || {});
   return res.redirect(outcome.redirectTo);
 });
 
@@ -1414,6 +1598,8 @@ app.post(
         isVerified: false,
       });
     }
+    await deleteTrustedDevicesByUser(user.id);
+    clearTrustedDeviceCookie(req, res);
     setFlash(req, 'success', '認証アプリのセットアップを開始しました。QRコードを読み取り、コードを入力してください。');
     return res.redirect(MFA_SETTINGS_PATH);
   }
@@ -1441,6 +1627,9 @@ app.post(
     }
     await updateMfaMethod(pending.id, { isVerified: true });
     await createRecoveryCodesForUser(req, userId);
+    if (req.session.user && req.session.user.id === userId) {
+      delete req.session.user.mustEnableMfa;
+    }
     setFlash(
       req,
       'success',
@@ -1454,9 +1643,15 @@ app.post(
   '/settings/mfa/totp/disable',
   requireRole(ROLES.PLATFORM, ROLES.TENANT, ROLES.EMPLOYEE),
   async (req, res) => {
+    if (requiresMfaForUser(req.session.user)) {
+      setFlash(req, 'error', 'テナント管理者は多要素認証を無効化できません。');
+      return res.redirect(MFA_SETTINGS_PATH);
+    }
     await deleteMfaMethodsByUserAndType(req.session.user.id, MFA_TYPES.TOTP);
     await deleteRecoveryCodesByUser(req.session.user.id);
+    await deleteTrustedDevicesByUser(req.session.user.id);
     clearPendingMfa(req);
+    clearTrustedDeviceCookie(req, res);
     setFlash(req, 'success', '認証アプリによる多要素認証を無効化しました。');
     return res.redirect(MFA_SETTINGS_PATH);
   }
@@ -1691,6 +1886,7 @@ app.post(
     }
     await deleteMfaMethodsByUserAndType(employee.id, MFA_TYPES.TOTP);
     await deleteRecoveryCodesByUser(employee.id);
+    await deleteTrustedDevicesByUser(employee.id);
     if (req.session.pendingMfa && req.session.pendingMfa.userId === employee.id) {
       clearPendingMfa(req);
     }
