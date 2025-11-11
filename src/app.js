@@ -1063,6 +1063,21 @@ function validateNameField(label, value) {
   return { valid: true, value: trimmed };
 }
 
+function validatePhoneNumberField(label, value) {
+  const raw = (value || '').trim();
+  if (!raw) {
+    return { valid: false, message: `${label}を入力してください。` };
+  }
+  const digits = raw.replace(/\D/g, '');
+  if (digits.length < 10 || digits.length > 15) {
+    return {
+      valid: false,
+      message: `${label}は10〜15桁の数字で入力してください（ハイフン可）。`,
+    };
+  }
+  return { valid: true, value: digits };
+}
+
 app.get('/', (req, res) => {
   if (!req.session.user) {
     return res.redirect('/login');
@@ -2708,6 +2723,7 @@ app.get('/platform/tenants', requireRole(ROLES.PLATFORM), async (req, res) => {
         id: admin.id,
         username: admin.username,
         email: admin.email,
+        phoneNumber: admin.phone_number || '',
         tenantName: admin.tenant_name || '名称未設定',
         tenantUid: admin.tenant_uid || '-',
         tenantStatus: admin.tenant_status || TENANT_STATUS.INACTIVE,
@@ -2753,6 +2769,11 @@ app.post('/platform/tenants', requireRole(ROLES.PLATFORM), async (req, res) => {
     setFlash(req, 'error', '管理者メールアドレスを入力してください。');
     return res.redirect('/platform/tenants');
   }
+  const adminPhoneResult = validatePhoneNumberField('管理者電話番号', req.body.adminPhoneNumber);
+  if (!adminPhoneResult.valid) {
+    setFlash(req, 'error', adminPhoneResult.message);
+    return res.redirect('/platform/tenants');
+  }
   const existingTenantAdmin = await getUserByEmail(adminEmail);
   if (existingTenantAdmin) {
     setFlash(req, 'error', '指定された管理者メールアドレスは既に使用されています。');
@@ -2787,6 +2808,7 @@ app.post('/platform/tenants', requireRole(ROLES.PLATFORM), async (req, res) => {
       mustChangePassword: true,
       firstName: adminFirstNameResult.value,
       lastName: adminLastNameResult.value,
+      phoneNumber: adminPhoneResult.value,
     });
   } catch (error) {
     console.error('[platform] テナント管理者アカウント作成に失敗しました', error);

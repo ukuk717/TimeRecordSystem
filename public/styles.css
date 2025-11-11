@@ -536,6 +536,11 @@ body.menu-open {
   color: #555555;
 }
 
+.user-meta {
+  font-size: 0.85rem;
+  color: #777777;
+}
+
 .status-cell {
   font-weight: 600;
 }

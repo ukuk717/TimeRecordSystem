@@ -82,6 +82,20 @@
           <span>管理者メールアドレス</span>
           <input type="email" name="adminEmail" required autocomplete="email">
         </label>
+        <label class="form-field">
+          <span>管理者電話番号</span>
+          <input
+            type="tel"
+            name="adminPhoneNumber"
+            required
+            inputmode="tel"
+            minlength="10"
+            maxlength="20"
+            pattern="[0-9\-\+\(\) ]{10,20}"
+            placeholder="例: 09012345678"
+          >
+          <small>数字のみ（ハイフン可）で入力してください。</small>
+        </label>
         <p class="form-note">
           初期パスワードは <strong><%= minPasswordLength %> 文字以上</strong>、英字・数字・記号を含むランダム値で自動生成されます。
         </p>
@@ -173,6 +187,9 @@
                     <div class="user-cell">
                       <span class="user-name"><%= admin.username %></span>
                       <span class="user-email"><%= admin.email || 'メール未設定' %></span>
+                      <% if (admin.phoneNumber) { %>
+                        <span class="user-meta">TEL: <%= admin.phoneNumber %></span>
+                      <% } %>
                     </div>
                   </td>
                   <td>

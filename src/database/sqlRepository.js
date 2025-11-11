@@ -152,6 +152,7 @@ class SqlRepository {
     mustChangePassword = false,
     firstName = null,
     lastName = null,
+    phoneNumber = null,
     status = 'active',
   }) {
     await this.ensureInitialized();
@@ -166,6 +167,7 @@ class SqlRepository {
       locked_until: null,
       first_name: firstName,
       last_name: lastName,
+      phone_number: phoneNumber,
       created_at: isoNow(),
       status,
       deactivated_at: null,
@@ -632,6 +634,7 @@ class SqlRepository {
       locked_until: null,
       first_name: null,
       last_name: null,
+      phone_number: null,
       created_at: isoNow(),
       status: 'active',
       deactivated_at: null,

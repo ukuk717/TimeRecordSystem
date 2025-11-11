@@ -5,3 +5,5 @@ data/session-secret.txt
 node_modules/
 data/
 .env
+mail_templates/
+
