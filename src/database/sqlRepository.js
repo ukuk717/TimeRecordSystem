@@ -206,6 +206,21 @@ class SqlRepository {
     return normalizeRow(row);
   }
 
+  async listTenantAdmins() {
+    await this.ensureInitialized();
+    const rows = await this.knex('users as u')
+      .leftJoin('tenants as t', 'u.tenant_id', 't.id')
+      .select(
+        'u.*',
+        this.knex.ref('t.name').as('tenant_name'),
+        this.knex.ref('t.tenant_uid').as('tenant_uid'),
+        this.knex.ref('t.status').as('tenant_status')
+      )
+      .where('u.role', 'tenant_admin')
+      .orderBy('u.username', 'asc');
+    return rows.map(normalizeRow);
+  }
+
   async getAllEmployeesByTenant(tenantId) {
     await this.ensureInitialized();
     const rows = await this.knex('users')
@@ -711,6 +726,23 @@ class SqlRepository {
     return mapMfaRow(row);
   }
 
+  async restoreMfaMethod(userId, type, snapshot = {}) {
+    await this.ensureInitialized();
+    const payload = {
+      user_id: userId,
+      type,
+      secret: snapshot.secret || null,
+      config_json: snapshot.config ? JSON.stringify(snapshot.config) : null,
+      is_verified: toDbBool(snapshot.is_verified),
+      verified_at: snapshot.verified_at || null,
+      last_used_at: snapshot.last_used_at || null,
+      created_at: snapshot.created_at || isoNow(),
+      updated_at: snapshot.updated_at || isoNow(),
+    };
+    const row = await this.insertAndFetch('user_mfa_methods', payload);
+    return mapMfaRow(row);
+  }
+
   async updateMfaMethod(id, updates = {}) {
     await this.ensureInitialized();
     const payload = {
@@ -759,6 +791,14 @@ class SqlRepository {
     await this.knex('user_mfa_recovery_codes').where({ user_id: userId }).del();
   }
 
+  async listRecoveryCodesByUser(userId) {
+    await this.ensureInitialized();
+    const rows = await this.knex('user_mfa_recovery_codes')
+      .where({ user_id: userId })
+      .orderBy('id', 'asc');
+    return rows.map(normalizeRow);
+  }
+
   async createRecoveryCodes(userId, codeHashes = []) {
     if (!Array.isArray(codeHashes) || codeHashes.length === 0) {
       return;
@@ -798,6 +838,21 @@ class SqlRepository {
     });
   }
 
+  async restoreRecoveryCodes(userId, codes = []) {
+    if (!Array.isArray(codes) || codes.length === 0) {
+      return;
+    }
+    await this.ensureInitialized();
+    const nowIso = isoNow();
+    const payload = codes.map((code) => ({
+      user_id: userId,
+      code_hash: code.code_hash,
+      used_at: code.used_at || null,
+      created_at: code.created_at || nowIso,
+    }));
+    await this.knex('user_mfa_recovery_codes').insert(payload);
+  }
+
   async createTrustedDevice({ userId, tokenHash, deviceInfo = null, expiresAt }) {
     await this.ensureInitialized();
     const payload = {
@@ -834,6 +889,51 @@ class SqlRepository {
   async deleteTrustedDevicesByUser(userId) {
     await this.ensureInitialized();
     await this.knex('user_mfa_trusted_devices').where({ user_id: userId }).del();
+  }
+
+  async createTenantAdminMfaResetLog({
+    targetUserId,
+    performedByUserId = null,
+    reason,
+    previousMethod = null,
+    previousRecoveryCodes = [],
+  }) {
+    await this.ensureInitialized();
+    const payload = {
+      target_user_id: targetUserId,
+      performed_by_user_id: performedByUserId,
+      reason,
+      previous_method_json: previousMethod ? JSON.stringify(previousMethod) : null,
+      previous_recovery_codes_json:
+        Array.isArray(previousRecoveryCodes) && previousRecoveryCodes.length > 0
+          ? JSON.stringify(previousRecoveryCodes)
+          : null,
+      created_at: isoNow(),
+      rolled_back_at: null,
+      rolled_back_by_user_id: null,
+      rollback_reason: null,
+    };
+    return this.insertAndFetch('tenant_admin_mfa_reset_logs', payload);
+  }
+
+  async getLatestTenantAdminMfaResetLog(targetUserId) {
+    await this.ensureInitialized();
+    const row = await this.knex('tenant_admin_mfa_reset_logs')
+      .where({ target_user_id: targetUserId })
+      .orderBy('created_at', 'desc')
+      .first();
+    return normalizeRow(row);
+  }
+
+  async markTenantAdminMfaResetRolledBack(logId, rollbackReason, rolledBackByUserId = null) {
+    await this.ensureInitialized();
+    await this.knex('tenant_admin_mfa_reset_logs')
+      .where({ id: logId })
+      .update({
+        rolled_back_at: isoNow(),
+        rolled_back_by_user_id: rolledBackByUserId,
+        rollback_reason: rollbackReason || null,
+      });
   }
 }
 

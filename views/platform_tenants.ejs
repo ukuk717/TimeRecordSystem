@@ -145,6 +145,124 @@
         </table>
       </div>
     </section>
+
+    <section class="card">
+      <h2>テナント管理者の2FAサポート</h2>
+      <p class="form-note">
+        テナント管理者本人からの依頼に基づき2FAをリセットできます。理由欄には本人確認方法やチケット番号などの証跡を必ず入力してください。
+        誤操作時は「直前のリセットを取消」からロールバックできます。
+      </p>
+      <div class="table-responsive">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>管理者</th>
+              <th>テナント</th>
+              <th>2FA状態</th>
+              <th>最終操作</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <% if (!tenantAdmins || tenantAdmins.length === 0) { %>
+              <tr><td colspan="5">テナント管理者はまだ登録されていません。</td></tr>
+            <% } else { %>
+              <% tenantAdmins.forEach(function(admin) { %>
+                <tr>
+                  <td>
+                    <div class="user-cell">
+                      <span class="user-name"><%= admin.username %></span>
+                      <span class="user-email"><%= admin.email || 'メール未設定' %></span>
+                    </div>
+                  </td>
+                  <td>
+                    <div class="user-cell">
+                      <span class="user-name"><%= admin.tenantName %></span>
+                      <span class="user-email">
+                        <code><%= admin.tenantUid %></code>
+                      </span>
+                    </div>
+                  </td>
+                  <td>
+                    <% if (admin.hasMfa) { %>
+                      <span class="status-badge success">設定済み</span>
+                    <% } else { %>
+                      <span class="status-badge warning">未設定</span>
+                    <% } %>
+                  </td>
+                  <td>
+                    <% if (!admin.lastReset) { %>
+                      <span>リセット履歴はありません。</span>
+                    <% } else if (admin.lastReset.rolledBackAtDisplay) { %>
+                      <div>最終リセット: <%= admin.lastReset.createdAtDisplay || '---' %></div>
+                      <div class="muted">理由: <%= admin.lastReset.reason || '---' %></div>
+                      <div class="muted">
+                        取消: <%= admin.lastReset.rolledBackAtDisplay %>
+                        （<%= admin.lastReset.rollbackReason || '理由未記入' %>）
+                      </div>
+                    <% } else { %>
+                      <div>最終リセット: <%= admin.lastReset.createdAtDisplay || '---' %></div>
+                      <div class="muted">理由: <%= admin.lastReset.reason || '---' %></div>
+                    <% } %>
+                  </td>
+                  <td>
+                    <div class="table-actions">
+                      <form
+                        method="post"
+                        action="/platform/tenant-admins/<%= admin.id %>/mfa/reset"
+                        class="form-inline table-action-form"
+                      >
+                        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                        <input
+                          type="text"
+                          name="reason"
+                          class="input-compact"
+                          placeholder="理由（必須）"
+                          required
+                          maxlength="200"
+                        >
+                        <button
+                          type="submit"
+                          class="btn danger"
+                          data-confirm-message="テナント管理者の2FAをリセットします。よろしいですか？"
+                        >
+                          2FAリセット
+                        </button>
+                      </form>
+                      <% if (admin.lastReset && !admin.lastReset.rolledBackAtDisplay) { %>
+                        <form
+                          method="post"
+                          action="/platform/tenant-admins/<%= admin.id %>/mfa/rollback"
+                          class="form-inline table-action-form"
+                        >
+                          <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                          <input type="hidden" name="logId" value="<%= admin.lastReset.id %>">
+                          <input
+                            type="text"
+                            name="rollbackReason"
+                            class="input-compact"
+                            placeholder="取消理由（必須）"
+                            required
+                            maxlength="200"
+                          >
+                          <button
+                            type="submit"
+                            class="btn secondary"
+                            data-confirm-message="直前の2FAリセットを取り消します。よろしいですか？"
+                          >
+                            直前のリセットを取消
+                          </button>
+                        </form>
+                      <% } %>
+                    </div>
+                  </td>
+                </tr>
+              <% }); %>
+            <% } %>
+          </tbody>
+        </table>
+      </div>
+    </section>
   </main>
   <script src="/header.js" defer></script>
 </body>

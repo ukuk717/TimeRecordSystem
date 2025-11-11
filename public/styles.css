@@ -385,6 +385,19 @@ body.menu-open {
   flex-wrap: wrap;
 }
 
+.table-action-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.input-compact {
+  flex: 1 1 160px;
+  min-width: 140px;
+  max-width: 240px;
+}
+
 .table-actions.share-inline {
   align-items: center;
 }
@@ -828,8 +841,19 @@ body.menu-open {
     align-items: stretch;
   }
 
+  .table-action-form {
+    width: 100%;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
   .table-actions .btn {
     width: 100%;
+  }
+
+  .table-action-form .input-compact {
+    width: 100%;
+    max-width: none;
   }
 
   .table-actions.share-inline {

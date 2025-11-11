@@ -20,6 +20,7 @@ const {
   setMustChangePassword,
   getUserByEmail,
   getUserById,
+  listTenantAdmins,
   getAllEmployeesByTenant,
   getAllEmployeesByTenantIncludingInactive,
   createWorkSession,
@@ -55,11 +56,14 @@ const {
   getMfaMethodByUserAndType,
   getVerifiedMfaMethod,
   createMfaMethod,
+  restoreMfaMethod,
   updateMfaMethod,
   deleteMfaMethodsByUserAndType,
   touchMfaMethodUsed,
   deleteRecoveryCodesByUser,
   createRecoveryCodes,
+  listRecoveryCodesByUser,
+  restoreRecoveryCodes,
   findUsableRecoveryCode,
   markRecoveryCodeUsed,
   createTrustedDevice,
@@ -67,6 +71,9 @@ const {
   touchTrustedDevice,
   deleteTrustedDeviceById,
   deleteTrustedDevicesByUser,
+  createTenantAdminMfaResetLog,
+  getLatestTenantAdminMfaResetLog,
+  markTenantAdminMfaResetRolledBack,
 } = require('./db');
 const {
   validatePassword,
@@ -203,6 +210,43 @@ function parseBoolean(value, fallback = false) {
     return false;
   }
   return fallback;
+}
+
+function safeParseJson(value, fallback = null) {
+  if (typeof value !== 'string' || value.length === 0) {
+    return fallback;
+  }
+  try {
+    return JSON.parse(value);
+  } catch (error) {
+    return fallback;
+  }
+}
+
+function snapshotMfaMethod(method) {
+  if (!method) {
+    return null;
+  }
+  return {
+    secret: method.secret || null,
+    config: method.config || null,
+    is_verified: Boolean(method.is_verified),
+    verified_at: method.verified_at || null,
+    last_used_at: method.last_used_at || null,
+    created_at: method.created_at || null,
+    updated_at: method.updated_at || null,
+  };
+}
+
+function snapshotRecoveryCodes(codes = []) {
+  if (!Array.isArray(codes) || codes.length === 0) {
+    return [];
+  }
+  return codes.map((code) => ({
+    code_hash: code.code_hash,
+    used_at: code.used_at || null,
+    created_at: code.created_at || null,
+  }));
 }
 
 function isSessionDateWithinAllowedRange(isoString) {
@@ -950,6 +994,22 @@ function buildSessionQuery(query = {}) {
     params.push(`month=${encodeURIComponent(query.month)}`);
   }
   return params.length > 0 ? `?${params.join('&')}` : '';
+}
+
+async function getTenantAdminForPlatform(req, res) {
+  const userId = Number.parseInt(req.params.userId, 10);
+  if (!Number.isFinite(userId)) {
+    setFlash(req, 'error', 'テナント管理者が見つかりません。');
+    res.redirect('/platform/tenants');
+    return null;
+  }
+  const tenantAdmin = await getUserById(userId);
+  if (!tenantAdmin || tenantAdmin.role !== ROLES.TENANT) {
+    setFlash(req, 'error', 'テナント管理者が見つかりません。');
+    res.redirect('/platform/tenants');
+    return null;
+  }
+  return tenantAdmin;
 }
 
 function normalizeSessionQueryParams(query = {}) {
@@ -2537,17 +2597,131 @@ app.post(
   }
 );
 
+app.post(
+  '/platform/tenant-admins/:userId/mfa/reset',
+  requireRole(ROLES.PLATFORM),
+  async (req, res) => {
+    const tenantAdmin = await getTenantAdminForPlatform(req, res);
+    if (!tenantAdmin) {
+      return;
+    }
+    const reason = (req.body.reason || '').trim();
+    if (!reason) {
+      setFlash(req, 'error', 'リセット理由を入力してください。');
+      return res.redirect('/platform/tenants');
+    }
+    const existingTotp = await getMfaMethodByUserAndType(tenantAdmin.id, MFA_TYPES.TOTP);
+    const recoveryCodes = await listRecoveryCodesByUser(tenantAdmin.id);
+    await createTenantAdminMfaResetLog({
+      targetUserId: tenantAdmin.id,
+      performedByUserId: req.session.user.id,
+      reason,
+      previousMethod: snapshotMfaMethod(existingTotp),
+      previousRecoveryCodes: snapshotRecoveryCodes(recoveryCodes),
+    });
+    await deleteMfaMethodsByUserAndType(tenantAdmin.id, MFA_TYPES.TOTP);
+    await deleteRecoveryCodesByUser(tenantAdmin.id);
+    await deleteTrustedDevicesByUser(tenantAdmin.id);
+    if (req.session.pendingMfa && req.session.pendingMfa.userId === tenantAdmin.id) {
+      clearPendingMfa(req);
+    }
+    setFlash(req, 'success', `テナント管理者「${tenantAdmin.username}」の2FAをリセットしました。`);
+    return res.redirect('/platform/tenants');
+  }
+);
+
+app.post(
+  '/platform/tenant-admins/:userId/mfa/rollback',
+  requireRole(ROLES.PLATFORM),
+  async (req, res) => {
+    const tenantAdmin = await getTenantAdminForPlatform(req, res);
+    if (!tenantAdmin) {
+      return;
+    }
+    const rollbackReason = (req.body.rollbackReason || '').trim();
+    if (!rollbackReason) {
+      setFlash(req, 'error', '取消理由を入力してください。');
+      return res.redirect('/platform/tenants');
+    }
+    const logId = Number.parseInt(req.body.logId, 10);
+    if (!Number.isFinite(logId)) {
+      setFlash(req, 'error', '取り消す対象のリセット情報が見つかりません。');
+      return res.redirect('/platform/tenants');
+    }
+    const latestLog = await getLatestTenantAdminMfaResetLog(tenantAdmin.id);
+    if (!latestLog || latestLog.id !== logId) {
+      setFlash(req, 'error', '直前のリセット情報が一致しないため、取り消しできません。');
+      return res.redirect('/platform/tenants');
+    }
+    if (latestLog.rolled_back_at) {
+      setFlash(req, 'error', 'このリセットはすでに取り消されています。');
+      return res.redirect('/platform/tenants');
+    }
+    const currentMethod = await getMfaMethodByUserAndType(tenantAdmin.id, MFA_TYPES.TOTP);
+    if (currentMethod) {
+      setFlash(req, 'error', '現在2FAが再設定されているため、取り消しできません。');
+      return res.redirect('/platform/tenants');
+    }
+    const previousMethod = safeParseJson(latestLog.previous_method_json, null);
+    const previousRecoveryCodes = safeParseJson(latestLog.previous_recovery_codes_json, []);
+    await deleteMfaMethodsByUserAndType(tenantAdmin.id, MFA_TYPES.TOTP);
+    if (previousMethod) {
+      await restoreMfaMethod(tenantAdmin.id, MFA_TYPES.TOTP, previousMethod);
+    }
+    await deleteRecoveryCodesByUser(tenantAdmin.id);
+    if (Array.isArray(previousRecoveryCodes) && previousRecoveryCodes.length > 0) {
+      await restoreRecoveryCodes(tenantAdmin.id, previousRecoveryCodes);
+    }
+    await markTenantAdminMfaResetRolledBack(logId, rollbackReason, req.session.user.id);
+    setFlash(
+      req,
+      'success',
+      `テナント管理者「${tenantAdmin.username}」の直前の2FAリセットを取り消しました。`
+    );
+    return res.redirect('/platform/tenants');
+  }
+);
+
 app.get('/platform/tenants', requireRole(ROLES.PLATFORM), async (req, res) => {
   const tenantRows = await listTenants();
   const tenants = tenantRows.map((tenant) => ({
     ...tenant,
     createdAtDisplay: formatDisplayDateTime(tenant.created_at),
   }));
+  const tenantAdminRows = await listTenantAdmins();
+  const tenantAdmins = await Promise.all(
+    tenantAdminRows.map(async (admin) => {
+      const verifiedTotp = await getVerifiedMfaMethod(admin.id, MFA_TYPES.TOTP);
+      const latestReset = await getLatestTenantAdminMfaResetLog(admin.id);
+      const lastReset = latestReset
+        ? {
+            id: latestReset.id,
+            createdAtDisplay: latestReset.created_at ? formatDisplayDateTime(latestReset.created_at) : '',
+            reason: latestReset.reason || '',
+            rolledBackAtDisplay: latestReset.rolled_back_at
+              ? formatDisplayDateTime(latestReset.rolled_back_at)
+              : null,
+            rollbackReason: latestReset.rollback_reason || null,
+          }
+        : null;
+      return {
+        id: admin.id,
+        username: admin.username,
+        email: admin.email,
+        tenantName: admin.tenant_name || '名称未設定',
+        tenantUid: admin.tenant_uid || '-',
+        tenantStatus: admin.tenant_status || TENANT_STATUS.INACTIVE,
+        hasMfa: Boolean(verifiedTotp),
+        lastReset,
+      };
+    })
+  );
   const generated = req.session.generatedTenantCredential || null;
   delete req.session.generatedTenantCredential;
 
   res.render('platform_tenants', {
     tenants,
+    tenantAdmins,
     generated,
     minPasswordLength: PASSWORD_MIN_LENGTH,
   });
