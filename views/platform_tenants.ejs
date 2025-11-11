@@ -88,13 +88,13 @@
             type="tel"
             name="adminPhoneNumber"
             required
-            inputmode="tel"
+            inputmode="numeric"
             minlength="10"
-            maxlength="20"
-            pattern="[0-9\-\+\(\) ]{10,20}"
-            placeholder="例: 09012345678"
+            maxlength="15"
+            pattern="[0-9\-]{10,15}"
+            placeholder="例: 090-1234-5678"
           >
-          <small>数字のみ（ハイフン可）で入力してください。</small>
+          <small>数字とハイフンのみ、10〜15桁で入力してください。</small>
         </label>
         <p class="form-note">
           初期パスワードは <strong><%= minPasswordLength %> 文字以上</strong>、英字・数字・記号を含むランダム値で自動生成されます。
