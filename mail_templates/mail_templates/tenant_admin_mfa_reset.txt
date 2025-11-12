@@ -1,0 +1,26 @@
+Subject: 【TimeRecordSystem】テナント管理者2FAリセット完了のお知らせ
+
+<%= tenantAdminName %> 様
+
+TimeRecordSystem サポートの <%= operatorName %> です。
+ご依頼に基づき、テナント「<%= tenantName %>」（UID: <%= tenantUid %>）の管理者アカウントに設定されていた多要素認証を <%= resetExecutedAt %> にリセットしました。
+
+【これからの手順】
+1. 現在ご利用中のパスワードで https://<%= appDomain %>/login にサインインしてください。
+2. ログイン直後に表示される案内に従い、認証アプリでQRコードを読み取って2FAを再設定してください。
+3. バックアップコードが表示されますので、必ず安全な場所に保管してください。
+
+※再設定が完了するまで主要機能（給与送信やダッシュボード）をご利用いただけません。
+※心当たりのないリセット通知の場合は、ただちに本メールへご連絡ください。
+
+参考情報:
+- リセット依頼メール送信元: <%= requestEmail %>
+- 契約開始日: <%= contractStartDate %>
+- 確認済み電話番号末尾4桁: <%= phoneLast4 %>
+
+その他ご不明点がございましたら、お気軽にお問い合わせください。
+
+--
+TimeRecordSystem サポート
+<%= operatorName %>
+<%= operatorEmail %>

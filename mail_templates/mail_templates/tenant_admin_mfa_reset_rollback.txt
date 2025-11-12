@@ -1,0 +1,16 @@
+Subject: 【TimeRecordSystem】テナント管理者2FAリセット取消のお知らせ
+
+<%= tenantAdminName %> 様
+
+TimeRecordSystem サポートの <%= operatorName %> です。
+<%= rollbackExecutedAt %> に通知した2FAリセットについて、以下の理由により取り消しを実施しました。
+
+取消理由: <%= rollbackReason %>
+該当テナント: <%= tenantName %>（UID: <%= tenantUid %>）
+
+現在はリセット前の認証状態に戻っています。心当たりがない場合や再度のリセットが必要な場合は、本メールにご返信ください。
+
+--
+TimeRecordSystem サポート
+<%= operatorName %>
+<%= operatorEmail %>
