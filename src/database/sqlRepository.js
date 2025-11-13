@@ -33,6 +33,20 @@ function parseJson(value) {
   }
 }
 
+function normalizeLogPayload(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  if (typeof value === 'string') {
+    return value;
+  }
+  try {
+    return JSON.stringify(value);
+  } catch (error) {
+    return null;
+  }
+}
+
 function mapMfaRow(row) {
   const normalized = normalizeRow(row);
   if (!normalized) {
@@ -906,11 +920,8 @@ class SqlRepository {
       target_user_id: targetUserId,
       performed_by_user_id: performedByUserId,
       reason,
-      previous_method_json: previousMethod ? JSON.stringify(previousMethod) : null,
-      previous_recovery_codes_json:
-        Array.isArray(previousRecoveryCodes) && previousRecoveryCodes.length > 0
-          ? JSON.stringify(previousRecoveryCodes)
-          : null,
+      previous_method_json: normalizeLogPayload(previousMethod),
+      previous_recovery_codes_json: normalizeLogPayload(previousRecoveryCodes),
       created_at: isoNow(),
       rolled_back_at: null,
       rolled_back_by_user_id: null,

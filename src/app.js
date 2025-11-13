@@ -505,6 +505,123 @@ function createSessionStore(secret) {
 
 const sessionSecret = loadSessionSecret();
 const sessionStore = createSessionStore(sessionSecret);
+const ENCRYPTED_LOG_PREFIX = 'enc:';
+const ENCRYPTION_FAILURE_SENTINEL = 'error:encryption_failed';
+
+function deriveMfaResetLogKey() {
+  const configured = (process.env.MFA_RESET_LOG_ENCRYPTION_KEY || '').trim();
+  if (configured) {
+    if (/^[0-9a-fA-F]{64}$/.test(configured)) {
+      return Buffer.from(configured, 'hex');
+    }
+    return crypto.createHash('sha256').update(configured, 'utf8').digest();
+  }
+  if (!isTestEnv) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      '[mfa] MFA_RESET_LOG_ENCRYPTION_KEY is not set; deriving encryption key from SESSION_SECRET.'
+    );
+  }
+  return crypto.createHash('sha256').update(String(sessionSecret || ''), 'utf8').digest();
+}
+
+const mfaResetLogKey = deriveMfaResetLogKey();
+
+function verifyMfaLogEncryptionKey() {
+  const probe = JSON.stringify({ ok: true, ts: Date.now() });
+  try {
+    const iv = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv('aes-256-gcm', mfaResetLogKey, iv);
+    const ciphertext = Buffer.concat([cipher.update(probe, 'utf8'), cipher.final()]);
+    const authTag = cipher.getAuthTag();
+    const decipher = crypto.createDecipheriv('aes-256-gcm', mfaResetLogKey, iv);
+    decipher.setAuthTag(authTag);
+    const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf8');
+    if (plaintext !== probe) {
+      throw new Error('MFA reset log encryption key self-test failed: mismatch.');
+    }
+  } catch (error) {
+    throw new Error(`MFA reset log encryption key self-test failed: ${error.message}`);
+  }
+}
+
+verifyMfaLogEncryptionKey();
+
+function encryptSensitiveLogPayload(payload) {
+  if (payload === null || payload === undefined) {
+    return null;
+  }
+  let serialized;
+  try {
+    serialized = typeof payload === 'string' ? payload : JSON.stringify(payload);
+  } catch (error) {
+    if (!isTestEnv) {
+      // eslint-disable-next-line no-console
+      console.warn('[mfa] Failed to serialize MFA reset log payload.', error);
+    }
+    return ENCRYPTION_FAILURE_SENTINEL;
+  }
+  try {
+    const iv = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv('aes-256-gcm', mfaResetLogKey, iv);
+    const ciphertext = Buffer.concat([cipher.update(serialized, 'utf8'), cipher.final()]);
+    const authTag = cipher.getAuthTag();
+    const blob = Buffer.concat([iv, authTag, ciphertext]).toString('base64');
+    return `${ENCRYPTED_LOG_PREFIX}${blob}`;
+  } catch (error) {
+    if (!isTestEnv) {
+      // eslint-disable-next-line no-console
+      console.warn('[mfa] Failed to encrypt MFA reset log payload; storing sentinel only.', error);
+    }
+    return ENCRYPTION_FAILURE_SENTINEL;
+  }
+}
+
+function decryptSensitiveLogPayload(payload) {
+  if (!payload) {
+    return null;
+  }
+  try {
+    let raw = payload;
+    if (raw.startsWith(ENCRYPTED_LOG_PREFIX)) {
+      raw = raw.slice(ENCRYPTED_LOG_PREFIX.length);
+    }
+    const buffer = Buffer.from(raw, 'base64');
+    if (buffer.length < 29) {
+      return null;
+    }
+    const iv = buffer.subarray(0, 12);
+    const authTag = buffer.subarray(12, 28);
+    const ciphertext = buffer.subarray(28);
+    const decipher = crypto.createDecipheriv('aes-256-gcm', mfaResetLogKey, iv);
+    decipher.setAuthTag(authTag);
+    const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+    return JSON.parse(plaintext.toString('utf8'));
+  } catch (error) {
+    if (!isTestEnv) {
+      // eslint-disable-next-line no-console
+      console.warn('[mfa] Failed to decrypt MFA reset log payload.', error);
+    }
+    return null;
+  }
+}
+
+function readResetLogPayload(payload, fallback = null) {
+  if (typeof payload !== 'string' || payload.trim().length === 0) {
+    return fallback;
+  }
+  const trimmed = payload.trim();
+  if (trimmed === ENCRYPTION_FAILURE_SENTINEL) {
+    return fallback;
+  }
+  if (trimmed.startsWith(ENCRYPTED_LOG_PREFIX)) {
+    return decryptSensitiveLogPayload(trimmed) || fallback;
+  }
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+    return safeParseJson(trimmed, fallback);
+  }
+  return decryptSensitiveLogPayload(trimmed) || safeParseJson(trimmed, fallback);
+}
 
 app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, '..', 'views'));
@@ -2627,12 +2744,36 @@ app.post(
     }
     const existingTotp = await getMfaMethodByUserAndType(tenantAdmin.id, MFA_TYPES.TOTP);
     const recoveryCodes = await listRecoveryCodesByUser(tenantAdmin.id);
+    const previousMethodSnapshot = snapshotMfaMethod(existingTotp);
+    const previousRecoveryCodesSnapshot = snapshotRecoveryCodes(recoveryCodes);
+    const previousMethodPayload = previousMethodSnapshot
+      ? encryptSensitiveLogPayload(previousMethodSnapshot)
+      : null;
+    const previousRecoveryCodesPayload =
+      Array.isArray(previousRecoveryCodesSnapshot) && previousRecoveryCodesSnapshot.length > 0
+        ? encryptSensitiveLogPayload(previousRecoveryCodesSnapshot)
+        : null;
+    if (
+      (previousMethodSnapshot &&
+        (!previousMethodPayload || previousMethodPayload === ENCRYPTION_FAILURE_SENTINEL)) ||
+      (previousRecoveryCodesSnapshot &&
+        previousRecoveryCodesSnapshot.length > 0 &&
+        (!previousRecoveryCodesPayload ||
+          previousRecoveryCodesPayload === ENCRYPTION_FAILURE_SENTINEL))
+    ) {
+      setFlash(
+        req,
+        'error',
+        '監査ログの暗号化に失敗したため、リセット処理を中断しました。システム管理者へ連絡してください。'
+      );
+      return res.redirect('/platform/tenants');
+    }
     await createTenantAdminMfaResetLog({
       targetUserId: tenantAdmin.id,
       performedByUserId: req.session.user.id,
       reason,
-      previousMethod: snapshotMfaMethod(existingTotp),
-      previousRecoveryCodes: snapshotRecoveryCodes(recoveryCodes),
+      previousMethod: previousMethodPayload,
+      previousRecoveryCodes: previousRecoveryCodesPayload,
     });
     await deleteMfaMethodsByUserAndType(tenantAdmin.id, MFA_TYPES.TOTP);
     await deleteRecoveryCodesByUser(tenantAdmin.id);
@@ -2677,8 +2818,11 @@ app.post(
       setFlash(req, 'error', '現在2FAが再設定されているため、取り消しできません。');
       return res.redirect('/platform/tenants');
     }
-    const previousMethod = safeParseJson(latestLog.previous_method_json, null);
-    const previousRecoveryCodes = safeParseJson(latestLog.previous_recovery_codes_json, []);
+    const previousMethod = readResetLogPayload(latestLog.previous_method_json, null);
+    const previousRecoveryCodes = readResetLogPayload(
+      latestLog.previous_recovery_codes_json,
+      []
+    );
     await deleteMfaMethodsByUserAndType(tenantAdmin.id, MFA_TYPES.TOTP);
     if (previousMethod) {
       await restoreMfaMethod(tenantAdmin.id, MFA_TYPES.TOTP, previousMethod);

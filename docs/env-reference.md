@@ -11,6 +11,7 @@
 | セッション | `SESSION_TABLE_NAME` | 任意 | `connect-session-knex` のテーブル名（既定: `sessions`）。 | Parameter Store |
 | セッション | `SESSION_TTL_SECONDS` | 任意 | セッションの TTL（秒）。既定は 43200 (12 時間)。 | Parameter Store |
 | セッション | `SESSION_PRUNE_INTERVAL_MS` | 任意 | `knex` ストアのクリーンアップ間隔（ミリ秒）。既定 600000。 | Parameter Store |
+| セキュリティ | `MFA_RESET_LOG_ENCRYPTION_KEY` | **必須(本番)** | テナント管理者の MFA リセットログに保存される TOTP シークレット／復旧コードを暗号化する AES-256-GCM の鍵。32 バイト以上のランダム値を hex もしくは base64 で指定。未設定時は `SESSION_SECRET` から派生した鍵を自動使用（開発専用）。 | **Secrets Manager** |
 | セッション (DynamoDB) | `DYNAMODB_SESSION_TABLE` | 任意 | セッション保存先テーブル名。未指定時は `${DYNAMODB_TABLE_PREFIX}-sessions`。 | Parameter Store |
 | セッション (DynamoDB) | `DYNAMODB_TABLE_PREFIX` | 任意 | セッション用テーブル接頭辞。ステージごとに分離したい場合に利用。 | Parameter Store |
 | セッション (DynamoDB) | `DYNAMODB_SESSION_READ_CAPACITY` / `DYNAMODB_SESSION_WRITE_CAPACITY` | 任意 | プロビジョンドモード利用時の RC/WC。オンデマンドの場合は未設定。 | Parameter Store |
