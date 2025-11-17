@@ -507,12 +507,79 @@ const sessionSecret = loadSessionSecret();
 const sessionStore = createSessionStore(sessionSecret);
 const ENCRYPTED_LOG_PREFIX = 'enc:';
 const ENCRYPTION_FAILURE_SENTINEL = 'error:encryption_failed';
+const AES_256_KEY_LENGTH = 32;
+
+function normalizeEncryptionKeyLength(buffer) {
+  if (!Buffer.isBuffer(buffer)) {
+    return null;
+  }
+  if (buffer.length === AES_256_KEY_LENGTH) {
+    return buffer;
+  }
+  if (buffer.length > AES_256_KEY_LENGTH) {
+    return Buffer.from(buffer.subarray(0, AES_256_KEY_LENGTH));
+  }
+  return null;
+}
+
+function tryDecodeHexKey(value) {
+  if (typeof value !== 'string' || value.length === 0 || value.length % 2 !== 0) {
+    return null;
+  }
+  if (!/^[0-9a-fA-F]+$/.test(value)) {
+    return null;
+  }
+  try {
+    return normalizeEncryptionKeyLength(Buffer.from(value, 'hex'));
+  } catch (error) {
+    return null;
+  }
+}
+
+function tryDecodeBase64Key(value) {
+  if (typeof value !== 'string' || value.length < 4) {
+    return null;
+  }
+  const compact = value.replace(/[\r\n\s]/g, '');
+  if (!/^[A-Za-z0-9+/=_-]+$/.test(compact)) {
+    return null;
+  }
+  const standard = compact.replace(/-/g, '+').replace(/_/g, '/');
+  const paddingLength = standard.length % 4 === 0 ? 0 : 4 - (standard.length % 4);
+  const padded = paddingLength > 0 ? `${standard}${'='.repeat(paddingLength)}` : standard;
+  let decoded;
+  try {
+    decoded = Buffer.from(padded, 'base64');
+  } catch (error) {
+    return null;
+  }
+  if (decoded.length === 0) {
+    return null;
+  }
+  const normalizedInput = padded.replace(/=+$/, '');
+  const normalizedOutput = decoded.toString('base64').replace(/=+$/, '');
+  if (normalizedInput !== normalizedOutput) {
+    return null;
+  }
+  return normalizeEncryptionKeyLength(decoded);
+}
 
 function deriveMfaResetLogKey() {
   const configured = (process.env.MFA_RESET_LOG_ENCRYPTION_KEY || '').trim();
   if (configured) {
-    if (/^[0-9a-fA-F]{64}$/.test(configured)) {
-      return Buffer.from(configured, 'hex');
+    const hexKey = tryDecodeHexKey(configured);
+    if (hexKey) {
+      return hexKey;
+    }
+    const base64Key = tryDecodeBase64Key(configured);
+    if (base64Key) {
+      return base64Key;
+    }
+    if (!isTestEnv) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        '[mfa] MFA_RESET_LOG_ENCRYPTION_KEY must be provided as hex or base64 (32 bytes or more); deriving key via SHA-256 hash of the value.'
+      );
     }
     return crypto.createHash('sha256').update(configured, 'utf8').digest();
   }

@@ -4,6 +4,8 @@
 - Please ensure that Japanese text is entered strictly in UTF-8 format. Mixing with other encodings such as Shift-JIS is not permitted.
 
 # Critical AGENTS Warning
+- Please exercise extreme caution to prevent security risks and implement solutions that do not conflict with known issues.
+- Writing code with even the slightest problem is strictly prohibited.
 - In principle, the execution of Python code is prohibited. If there is anything that can only be executed using Python, be sure to confirm with the user the reason. The arbitrary execution of Python code is prohibited.
 ## Critical Test Warning
 - Do not run `npm test`, `npm run test`, `npx jest`, or `yarn test`.

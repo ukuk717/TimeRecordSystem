@@ -7,10 +7,10 @@
 - リセット取り消し時（`/platform/tenant-admins/:userId/mfa/rollback`）は、復号したスナップショットを `restoreMfaMethod` / `restoreRecoveryCodes` に渡して復元する。復元後は必ず本人に再設定を促し、ログへ理由を残す。
 
 ## TODO / 今後の課題
-- `tenant_admin_mfa_reset_logs` を含む MFA 関連テーブルでは `created_at`・`rolled_back_at` が `string` 型のままなので、TIMESTAMPTZ へ移行するマイグレーションを追加する（`docs/db-migration.md` の方針と整合させる）。
 - プラットフォーム UI (`views/platform_tenants.ejs`) の確認ダイアログは HTML エスケープ済みのため追加対応不要だが、将来的に属性へ変数を埋め込む場合は `data-*="<%= _.escape(value) %>"` など属性コンテキストのエスケープを徹底する。
 
 ## 運用メモ
+- `20251117153000_convert_mfa_timestamps.js` で `tenant_admin_mfa_reset_logs` を含む MFA 関連テーブルの `created_at` / `rolled_back_at`（および MFA メソッド／復旧コード／信頼済み端末の時刻カラム）を TIMESTAMPTZ へ再定義済み。既存データは `NULLIF(..., '')::timestamptz` や `AT TIME ZONE 'UTC'` を通じて UTC 起点で再解釈されるため追加の手動メンテナンスは不要。なお型変換の安全性のため PostgreSQL でのみ実行可能。
 - 本番では `MFA_RESET_LOG_ENCRYPTION_KEY` を **Secrets Manager** に 32 バイト以上のランダム値（hex もしくは base64）で格納し、ローテーションした際はプロセス再起動を行う。
 - 旧ログに平文が残っている場合は、必要に応じてログを削除するか、暗号化済みの状態で作り直す。`readResetLogPayload` が自動判別するため緊急対応は不要。
 - リセットやロールバックを実施したら、必ずチケット番号・本人確認方法を `reason` / `rollback_reason` に残して監査証跡を維持する。

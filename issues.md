@@ -42,14 +42,26 @@
 
 -needs fix-
 
-- knexClient.js
-    - Critical: Insecure SSL configuration.
-    - Fix inconsistent error message.
-- server.js
-    - Process should exit after failed initialization.
-- app.js
-    - ~~Unbounded loop could theoretically hang.~~
-- db.js
-    - ~~Risk: Module-level repository initialization.~~
-- db-migration.md
-    - Minor markdown formatting issue.
+# 20251117153000_convert_mfa_timestamps.js
+Generic migration path may lose data or produce inconsistent results.
+
+The generic migration has several critical issues:
+
+Data loss in DOWN migration (lines 148-154): When reverting from timestamptz to string, Knex's .string() and .alter() don't support custom conversion expressions. The database will use its default casting, which may not produce ISO 8601 formatted strings as the PostgreSQL path does (line 89). This means the data format won't be consistent with the original format.
+
+Ambiguous timezone handling (lines 136-146): When reverting from timestamptz to timestamp, tbl.timestamp(column.name) doesn't explicitly set useTz: false. Depending on the database and Knex configuration, this might create a timestamp WITH timezone instead of without, failing to properly revert the migration.
+
+No length specification (line 148): tbl.string(column.name) doesn't specify a length, while the PostgreSQL path uses VARCHAR(255). Different databases may use different defaults.
+
+Consider one of these approaches:
+
+Option 1 (Recommended): Restrict this migration to PostgreSQL only, since the generic path cannot reliably handle the complex type conversions:
+
+ exports.up = async (knex) => {
+   if (isPostgres(knex)) {
+     await runPostgresMigration(knex, 'up');
+     return;
+   }
+-  await runGenericMigration(knex, 'up');
++  throw new Error('This migration only supports PostgreSQL');
+ };

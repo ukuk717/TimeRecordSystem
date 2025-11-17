@@ -59,3 +59,8 @@
 - 非同期化した DB レイヤーに合わせて Jest テストを刷新（現状は実行不可のため手動検証を併用）。
 - CI/CD でマイグレーション実行（Knex migration 等）を自動化。
 - 移行後の検証として件数チェックやチェックサム計算などの差分確認ツールを整備する。
+
+## 9. MFA 関連テーブルの TIMESTAMPTZ 化
+- マルチファクタ関連の履歴は監査上 UTC で一貫して扱う必要があるため、`20251117153000_convert_mfa_timestamps.js` で `tenant_admin_mfa_reset_logs`、`user_mfa_methods`、`user_mfa_recovery_codes`、`user_mfa_trusted_devices` の `created_at` / `updated_at` / `verified_at` / `rolled_back_at` 等を **TIMESTAMPTZ** に再定義した。
+- 旧データは `NULLIF(value, '')::timestamptz` と `AT TIME ZONE 'UTC'` を使って再解釈しているため、文字列として保存されていた ISO8601 も曖昧さなく移行できる。
+- 型変換の安全性を担保するため、このマイグレーションは **PostgreSQL のみ** をサポートする。MySQL/SQLite で実行するとエラーになるので、MFA 関連機能を利用する環境は PostgreSQL を使用すること。
