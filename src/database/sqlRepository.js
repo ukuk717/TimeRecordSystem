@@ -33,6 +33,17 @@ function parseJson(value) {
   }
 }
 
+function stringifyJson(value) {
+  if (value === undefined) {
+    return null;
+  }
+  try {
+    return JSON.stringify(value);
+  } catch (error) {
+    return null;
+  }
+}
+
 function normalizeLogPayload(value) {
   if (value === null || value === undefined) {
     return null;
@@ -57,6 +68,59 @@ function mapMfaRow(row) {
     delete normalized.config_json;
   }
   return normalized;
+}
+
+function mapEmailOtpRow(row) {
+  const normalized = normalizeRow(row);
+  if (!normalized) {
+    return normalized;
+  }
+  if ('metadata_json' in normalized) {
+    normalized.metadata = parseJson(normalized.metadata_json);
+    delete normalized.metadata_json;
+  }
+  return normalized;
+}
+
+function applyEmailOtpFilters(query, filters = {}) {
+  if (!filters || typeof filters !== 'object') {
+    return query;
+  }
+  if ('id' in filters && filters.id !== undefined && filters.id !== null) {
+    query.where({ id: filters.id });
+  }
+  if ('userId' in filters) {
+    if (filters.userId === null) {
+      query.whereNull('user_id');
+    } else {
+      query.where('user_id', filters.userId);
+    }
+  }
+  if ('tenantId' in filters) {
+    if (filters.tenantId === null) {
+      query.whereNull('tenant_id');
+    } else {
+      query.where('tenant_id', filters.tenantId);
+    }
+  }
+  if ('roleCodeId' in filters) {
+    if (filters.roleCodeId === null) {
+      query.whereNull('role_code_id');
+    } else {
+      query.where('role_code_id', filters.roleCodeId);
+    }
+  }
+  if (filters.purpose) {
+    query.where('purpose', filters.purpose);
+  }
+  if (filters.targetEmail) {
+    query.where('target_email', filters.targetEmail);
+  }
+  if (filters.onlyActive) {
+    const nowIso = filters.activeAt || isoNow();
+    query.whereNull('consumed_at').andWhere('expires_at', '>', nowIso);
+  }
+  return query;
 }
 
 function toDbBool(value) {
@@ -88,17 +152,28 @@ class SqlRepository {
 
   async insertAndFetch(tableName, payload, executor = this.knex) {
     const db = executor || this.knex;
-    const client = db.client.config.client;
-    if (client === 'pg' || client === 'oracledb' || client === 'mssql') {
-      const [row] = await db(tableName).insert(payload).returning('*');
-      return normalizeRow(row);
-    }
-    if (client === 'mysql' || client === 'mysql2' || client === 'sqlite3') {
-      const insertedIds = await db(tableName).insert(payload);
+    const client = db.client && db.client.config ? db.client.config.client : null;
+    const supportsReturning = client === 'pg' || client === 'oracledb' || client === 'mssql';
+
+    const insertWithConnection = async (conn) => {
+      if (supportsReturning) {
+        const [row] = await conn(tableName).insert(payload).returning('*');
+        return normalizeRow(row);
+      }
+      const insertedIds = await conn(tableName).insert(payload);
       const id = Array.isArray(insertedIds) ? insertedIds[0] : insertedIds;
-      const row = await db(tableName).where({ id }).first();
+      const row = await conn(tableName).where({ id }).first();
       return normalizeRow(row);
+    };
+
+    if (supportsReturning || db.isTransaction) {
+      return insertWithConnection(db);
     }
+
+    if (client === 'mysql' || client === 'mysql2' || client === 'sqlite3') {
+      return db.transaction((trx) => insertWithConnection(trx));
+    }
+
     throw new Error(`Unsupported client "${client}" for insert.`);
   }
 
@@ -122,6 +197,7 @@ class SqlRepository {
       created_at: isoNow(),
       status,
       deactivated_at: null,
+      require_employee_email_verification: toDbBool(false),
     };
     return this.insertAndFetch('tenants', payload);
   }
@@ -155,6 +231,19 @@ class SqlRepository {
       status,
       deactivated_at: isoNow(),
     });
+  }
+
+  async updateTenantRegistrationSettings(tenantId, { requireEmailVerification } = {}) {
+    await this.ensureInitialized();
+    const patch = {};
+    if (requireEmailVerification !== undefined) {
+      patch.require_employee_email_verification = toDbBool(requireEmailVerification);
+    }
+    if (Object.keys(patch).length === 0) {
+      return this.getTenantById(tenantId);
+    }
+    await this.knex('tenants').where({ id: tenantId }).update(patch);
+    return this.getTenantById(tenantId);
   }
 
   async createUser({
@@ -199,6 +288,29 @@ class SqlRepository {
         failed_attempts: 0,
         locked_until: null,
       });
+  }
+
+  async updateUserProfile(userId, { firstName, lastName, phoneNumber } = {}) {
+    await this.ensureInitialized();
+    const patch = {};
+    if (firstName !== undefined) {
+      patch.first_name = firstName;
+    }
+    if (lastName !== undefined) {
+      patch.last_name = lastName;
+    }
+    if (phoneNumber !== undefined) {
+      patch.phone_number = phoneNumber;
+    }
+    if (Object.keys(patch).length === 0) {
+      return;
+    }
+    await this.knex('users').where({ id: userId }).update(patch);
+  }
+
+  async updateUserEmail(userId, email) {
+    await this.ensureInitialized();
+    await this.knex('users').where({ id: userId }).update({ email });
   }
 
   async setMustChangePassword(userId, mustChange) {
@@ -595,6 +707,118 @@ class SqlRepository {
     await this.knex('work_sessions').whereIn('id', sessionIds).del();
   }
 
+  async deleteEmailOtpRequests(filters = {}) {
+    await this.ensureInitialized();
+    const query = this.knex('email_otp_requests');
+    applyEmailOtpFilters(query, filters);
+    await query.del();
+  }
+
+  async createEmailOtpRequest({
+    userId = null,
+    tenantId = null,
+    roleCodeId = null,
+    purpose,
+    targetEmail,
+    codeHash,
+    expiresAt,
+    maxAttempts = 5,
+    metadata = null,
+    lastSentAt = null,
+  }) {
+    await this.ensureInitialized();
+    const payload = {
+      user_id: userId,
+      tenant_id: tenantId,
+      role_code_id: roleCodeId,
+      purpose,
+      target_email: targetEmail,
+      code_hash: codeHash,
+      metadata_json: stringifyJson(metadata),
+      expires_at: expiresAt,
+      consumed_at: null,
+      failed_attempts: 0,
+      max_attempts: maxAttempts,
+      lock_until: null,
+      last_sent_at: lastSentAt || isoNow(),
+      created_at: isoNow(),
+      updated_at: isoNow(),
+    };
+    const row = await this.insertAndFetch('email_otp_requests', payload);
+    return mapEmailOtpRow(row);
+  }
+
+  async getEmailOtpRequestById(id) {
+    await this.ensureInitialized();
+    const row = await this.knex('email_otp_requests').where({ id }).first();
+    return mapEmailOtpRow(row);
+  }
+
+  async findEmailOtpRequest(filters = {}) {
+    await this.ensureInitialized();
+    const query = this.knex('email_otp_requests');
+    applyEmailOtpFilters(query, filters);
+    query.orderBy('created_at', 'desc');
+    const row = await query.first();
+    return mapEmailOtpRow(row);
+  }
+
+  async updateEmailOtpRequest(id, updates = {}) {
+    await this.ensureInitialized();
+    const patch = { updated_at: isoNow() };
+    if ('codeHash' in updates) {
+      patch.code_hash = updates.codeHash;
+    }
+    if ('expiresAt' in updates) {
+      patch.expires_at = updates.expiresAt;
+    }
+    if ('consumedAt' in updates) {
+      patch.consumed_at = updates.consumedAt;
+    }
+    if ('failedAttempts' in updates) {
+      patch.failed_attempts = updates.failedAttempts;
+    }
+    if ('maxAttempts' in updates) {
+      patch.max_attempts = updates.maxAttempts;
+    }
+    if ('lockUntil' in updates) {
+      patch.lock_until = updates.lockUntil;
+    }
+    if ('lastSentAt' in updates) {
+      patch.last_sent_at = updates.lastSentAt;
+    }
+    if ('metadata' in updates) {
+      patch.metadata_json = stringifyJson(updates.metadata);
+    }
+    await this.knex('email_otp_requests').where({ id }).update(patch);
+    return this.getEmailOtpRequestById(id);
+  }
+
+  async incrementEmailOtpFailure(id, maxAttempts = 5, lockDurationMs = 0) {
+    await this.ensureInitialized();
+    return this.knex.transaction(async (trx) => {
+      const row = await trx('email_otp_requests').where({ id }).forUpdate().first();
+      if (!row) {
+        return null;
+      }
+      const current = mapEmailOtpRow(row);
+      const attempts = (current.failed_attempts || 0) + 1;
+      const threshold = Number.isInteger(current.max_attempts) ? current.max_attempts : maxAttempts;
+      const shouldLock = Number.isInteger(threshold) && attempts >= threshold;
+      const nextLock =
+        shouldLock && lockDurationMs > 0
+          ? new Date(Date.now() + lockDurationMs).toISOString()
+          : current.lock_until || null;
+      await trx('email_otp_requests').where({ id }).update({
+        failed_attempts: attempts,
+        lock_until: nextLock,
+        updated_at: isoNow(),
+      });
+      const updated = await trx('email_otp_requests').where({ id }).first();
+      return mapEmailOtpRow(updated);
+    });
+  }
+
   async ensureDefaultPlatformAdmin() {
     await this.ensureInitialized();
     const emailInput = process.env.DEFAULT_PLATFORM_ADMIN_EMAIL || '';
@@ -663,6 +887,11 @@ class SqlRepository {
   async deleteAllData() {
     await this.ensureInitialized();
     await this.knex.transaction(async (trx) => {
+      await trx('email_otp_requests').del();
+      await trx('user_mfa_trusted_devices').del();
+      await trx('user_mfa_recovery_codes').del();
+      await trx('tenant_admin_mfa_reset_logs').del();
+      await trx('user_mfa_methods').del();
       await trx('password_resets').del();
       await trx('role_codes').del();
       await trx('payroll_records').del();
@@ -787,6 +1016,37 @@ class SqlRepository {
     await this.knex('user_mfa_methods').where({ id }).update(payload);
     const row = await this.knex('user_mfa_methods').where({ id }).first();
     return mapMfaRow(row);
+  }
+
+  async updateMfaFailureState(id, { reset = false, maxFailures = 5, lockDurationMs = 0 } = {}) {
+    await this.ensureInitialized();
+    return this.knex.transaction(async (trx) => {
+      const row = await trx('user_mfa_methods').where({ id }).forUpdate().first();
+      if (!row) {
+        return null;
+      }
+      const method = mapMfaRow(row);
+      const config =
+        method && method.config && typeof method.config === 'object' ? { ...method.config } : {};
+      if (reset) {
+        config.failedAttempts = 0;
+        config.lockUntil = null;
+      } else {
+        const attempts = Number.isFinite(config.failedAttempts) ? config.failedAttempts + 1 : 1;
+        config.failedAttempts = attempts;
+        if (attempts >= maxFailures && lockDurationMs > 0) {
+          config.lockUntil = new Date(Date.now() + lockDurationMs).toISOString();
+        }
+      }
+      await trx('user_mfa_methods')
+        .where({ id })
+        .update({
+          config_json: stringifyJson(config),
+          updated_at: isoNow(),
+        });
+      const updated = await trx('user_mfa_methods').where({ id }).first();
+      return mapMfaRow(updated);
+    });
   }
 
   async deleteMfaMethodsByUserAndType(userId, type) {

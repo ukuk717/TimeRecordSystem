@@ -1,4 +1,5 @@
 process.env.TZ = process.env.APP_TIMEZONE || 'Asia/Tokyo';
+const BRAND_NAME = process.env.APP_BRAND_NAME || 'Attendly';
 
 let app;
 try {
@@ -18,7 +19,7 @@ const PORT = process.env.PORT || 3000;
     await initializeApp();
     app.listen(PORT, () => {
       // eslint-disable-next-line no-console
-      console.log('TimeRecordSystem server is running on http://localhost:' + PORT);
+      console.log(`${BRAND_NAME} server is running on http://localhost:${PORT}`);
     });
   } catch (error) {
     // eslint-disable-next-line no-console

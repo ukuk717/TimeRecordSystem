@@ -25,8 +25,8 @@ authenticator.options = {
   ...DEFAULT_TOTP_OPTIONS,
 };
 
-function getMfaIssuer() {
-  return process.env.MFA_ISSUER || 'TimeRecordSystem';
+function getMfaIssuer(defaultName = 'TimeRecordSystem') {
+  return process.env.MFA_ISSUER || defaultName;
 }
 
 function generateTotpSecret() {

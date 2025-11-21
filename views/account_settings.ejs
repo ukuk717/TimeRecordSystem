@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>アカウント設定 | <%= brandName %></title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <%
+    const headerRole =
+      currentUser && currentUser.role === 'platform_admin'
+        ? 'プラットフォーム管理者'
+        : currentUser && currentUser.role === 'tenant_admin'
+        ? 'テナント管理者'
+        : currentUser
+        ? '従業員'
+        : null;
+    const headerHomeHref =
+      !currentUser
+        ? '/'
+        : currentUser.role === 'platform_admin'
+        ? '/platform/tenants'
+        : currentUser.role === 'tenant_admin'
+        ? '/admin'
+        : '/employee';
+  %>
+  <header class="app-header">
+    <div class="app-header__brand">
+      <h1 class="app-header__title">
+        <a href="<%= headerHomeHref %>" class="app-header__home-link"><%= brandName %></a>
+      </h1>
+      <% if (headerRole) { %>
+        <span class="app-header__role"><%= headerRole %></span>
+      <% } %>
+    </div>
+    <% if (currentUser) { %>
+      <button class="menu-toggle" type="button" aria-label="メニューを開閉" aria-expanded="false">
+        <span class="menu-toggle__bar"></span>
+        <span class="menu-toggle__bar"></span>
+        <span class="menu-toggle__bar"></span>
+      </button>
+      <nav class="app-header__nav">
+        <% if (currentUser.role === 'platform_admin') { %>
+          <a href="/platform/tenants" class="nav-link">テナント一覧</a>
+        <% } else if (currentUser.role === 'tenant_admin') { %>
+          <a href="/admin" class="nav-link">ダッシュボード</a>
+          <a href="/admin/payrolls" class="nav-link">給与明細送信</a>
+          <a href="/admin/role-codes" class="nav-link">ロールコード管理</a>
+        <% } else { %>
+          <a href="/employee" class="nav-link">勤怠ダッシュボード</a>
+          <a href="/employee/payrolls" class="nav-link">給与明細</a>
+        <% } %>
+        <a href="/account" class="nav-link is-active">アカウント設定</a>
+        <form method="post" action="/logout" class="nav-form">
+          <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+          <button type="submit" class="btn link">ログアウト</button>
+        </form>
+      </nav>
+    <% } %>
+  </header>
+  <main class="container auth-container">
+    <% if (flash) { %>
+      <div class="flash <%= flash.type %>"><%= flash.message %></div>
+    <% } %>
+
+    <section class="card">
+      <h2>アカウント情報</h2>
+      <form method="post" action="/account/profile" class="form">
+        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+        <div class="form-field form-field-inline">
+          <label>
+            <span>姓</span>
+            <input type="text" name="lastName" value="<%= profile.lastName %>" required autocomplete="family-name">
+          </label>
+          <label>
+            <span>名</span>
+            <input type="text" name="firstName" value="<%= profile.firstName %>" required autocomplete="given-name">
+          </label>
+        </div>
+        <label class="form-field">
+          <span>電話番号（準備中）</span>
+          <input type="tel" name="phoneNumber" value="<%= profile.phoneNumber %>" disabled placeholder="近日公開" autocomplete="tel">
+        </label>
+        <p class="form-note">氏名は従業員一覧や給与明細に表示されます。電話番号は将来の本人確認用途として、UIのみ先行公開しています。</p>
+        <button type="submit" class="btn primary">保存する</button>
+      </form>
+    </section>
+
+    <section class="card" id="email-change">
+      <h2>メールアドレスの変更</h2>
+      <p class="section-subtitle">
+        新しいメールアドレス宛に 6 桁の確認コードを送信し、入力が完了すると自動的にサインアウトします。
+      </p>
+      <form method="post" action="/account/email/start" class="form">
+        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+        <label class="form-field">
+          <span>新しいメールアドレス</span>
+          <input type="email" name="newEmail" required autocomplete="off">
+        </label>
+        <% if (requireMfaForProfileChange && profileMfaOptions.length > 0) { %>
+          <fieldset class="form-field">
+            <legend>2FA 認証</legend>
+            <% profileMfaOptions.forEach(function(option, idx) { %>
+              <label class="form-radio">
+                <input type="radio" name="mfaMethod" value="<%= option.value %>" <%= idx === 0 ? 'checked' : '' %>>
+                <span><%= option.label %></span>
+              </label>
+            <% }); %>
+            <label class="form-field">
+              <span>認証コード</span>
+              <input type="text" name="mfaToken" maxlength="10" autocomplete="one-time-code" required>
+            </label>
+          </fieldset>
+        <% } else { %>
+          <p class="form-note">テナント管理者以外は 2FA なしで変更できます。</p>
+        <% } %>
+        <button type="submit" class="btn primary">確認コードを送信</button>
+      </form>
+      <% if (requireMfaForProfileChange && profileMfa && profileMfa.canSendEmailCode) { %>
+        <form method="post" action="/account/mfa/email/send" class="form-inline inline-spacing">
+          <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+          <button type="submit" class="btn secondary" <%= profileMfa.isLocked ? 'disabled' : '' %>>
+            メールコードを送信
+            <% if (profileMfa.resendWaitSeconds > 0) { %>
+              （<%= profileMfa.resendWaitSeconds %>秒後）
+            <% } %>
+          </button>
+        </form>
+        <% if (profileMfa.isLocked) { %>
+          <p class="form-note error">メールコードはロックされています。<%= profileMfa.lockUntilDisplay || '10分後' %> までお待ちください。</p>
+        <% } %>
+      <% } %>
+
+      <% if (emailChange) { %>
+        <div class="form-divider"></div>
+        <h3>確認コードの入力</h3>
+        <p class="form-note">
+          送信先: <code><%= emailChange.targetEmail %></code> ／ 有効期限: <%= emailChange.expiresDisplay || '10分以内' %>
+        </p>
+        <% if (emailChange.isLocked) { %>
+          <p class="form-note error">連続失敗によりロックされました。<%= emailChange.lockUntilDisplay || '10分後' %> までお待ちください。</p>
+        <% } %>
+        <form method="post" action="/account/email/verify" class="form-inline">
+          <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+          <label class="form-field">
+            <span>確認コード</span>
+            <input type="text" name="token" inputmode="numeric" pattern="[0-9]*" maxlength="<%= otpLength || 6 %>" required autocomplete="one-time-code" <%= emailChange.isLocked ? 'disabled' : '' %>>
+          </label>
+          <button type="submit" class="btn primary" <%= emailChange.isLocked ? 'disabled' : '' %>>メールアドレスを更新</button>
+        </form>
+        <form method="post" action="/account/email/cancel" class="form-inline">
+          <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+          <button type="submit" class="btn link">この手続きを取り消す</button>
+        </form>
+      <% } %>
+    </section>
+
+    <section class="card" id="password">
+      <h2>パスワード変更</h2>
+      <form method="post" action="/account/password" class="form">
+        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+        <label class="form-field">
+          <span>現在のパスワード</span>
+          <input type="password" name="currentPassword" required autocomplete="current-password">
+        </label>
+        <label class="form-field">
+          <span>新しいパスワード</span>
+          <input type="password" name="newPassword" required minlength="<%= minPasswordLength %>" autocomplete="new-password">
+        </label>
+        <p class="form-note">
+          パスワードは <strong><%= minPasswordLength %> 文字以上</strong>で、英字・数字・記号を必ず含めてください。
+        </p>
+        <button type="submit" class="btn primary">変更を保存</button>
+      </form>
+    </section>
+
+    <section class="card" id="mfa">
+      <h2>多要素認証（2FA）</h2>
+      <p class="section-subtitle">
+        認証アプリ（TOTP）とメールワンタイムコードのどちらか、または両方を登録できます。
+      </p>
+
+      <div class="mfa-status">
+        <% if (mfa.totp.isEnabled) { %>
+          <span class="status-badge success">認証アプリ有効</span>
+          <dl class="definition-list compact">
+            <% if (mfa.totp.verifiedAtDisplay) { %>
+              <div>
+                <dt>有効化日時</dt>
+                <dd><%= mfa.totp.verifiedAtDisplay %></dd>
+              </div>
+            <% } %>
+            <% if (mfa.totp.lastUsedAtDisplay) { %>
+              <div>
+                <dt>最終使用</dt>
+                <dd><%= mfa.totp.lastUsedAtDisplay %></dd>
+              </div>
+            <% } %>
+          </dl>
+        <% } else { %>
+          <span class="status-badge warning">未設定</span>
+        <% } %>
+      </div>
+
+      <% if (mfa.totp.isEnabled) { %>
+        <% if (currentUser && currentUser.role === 'tenant_admin') { %>
+          <p class="form-note">テナント管理者は 2FA を必須にしています。無効化はできません。</p>
+        <% } else { %>
+          <form method="post" action="/settings/mfa/totp/disable" class="form-inline">
+            <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+            <button type="submit" class="btn danger" data-confirm-message="認証アプリを無効化しますか？">認証アプリを無効化</button>
+          </form>
+        <% } %>
+      <% } else { %>
+        <form method="post" action="/settings/mfa/totp/start" class="form-inline">
+          <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+          <button type="submit" class="btn secondary">認証アプリを設定</button>
+        </form>
+      <% } %>
+
+      <% if (mfa.totp.pendingSetup) { %>
+        <div class="mfa-qr">
+          <h3>設定手順</h3>
+          <p>認証アプリで QR コードを読み取り、生成されたコードを入力してください。</p>
+          <div class="mfa-qr__image">
+            <img src="<%= mfa.totp.pendingSetup.qrCodeDataUrl %>" alt="QRコード" width="240" height="240">
+          </div>
+          <form method="post" action="/settings/mfa/totp/verify" class="form-inline">
+            <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+            <label class="form-field">
+              <span>認証コード</span>
+              <input type="text" name="verificationCode" inputmode="numeric" pattern="[0-9]*" maxlength="8" required autocomplete="one-time-code">
+            </label>
+            <button type="submit" class="btn primary">コードを確認</button>
+          </form>
+        </div>
+      <% } %>
+
+      <div class="form-divider"></div>
+
+      <div class="mfa-email">
+        <h3>メールワンタイムコード</h3>
+        <p class="section-subtitle">
+          6 桁のコードを登録済みメールアドレスに送信します。10 分以内に入力できない場合や 5 回失敗した場合は 10 分間ロックされます。
+        </p>
+        <% if (mfa.email.isEnabled) { %>
+          <span class="status-badge success">利用中（送信先: <code><%= mfa.email.targetEmail %></code>）</span>
+          <form method="post" action="/settings/mfa/email/disable" class="form-inline" data-confirm-message="メールコードを無効化しますか？">
+            <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+            <button type="submit" class="btn danger">メールコードを無効化</button>
+          </form>
+        <% } else { %>
+          <% if (mfa.email.pendingSetup) { %>
+            <p class="form-note">
+              コード有効期限: <%= mfa.email.setupExpiresDisplay || '10分以内' %>
+              <% if (mfa.email.setupLocked) { %>(現在ロック中)<% } %>
+            </p>
+            <form method="post" action="/settings/mfa/email/resend" class="form-inline">
+              <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+              <button type="submit" class="btn secondary" <%= mfa.email.setupLocked ? 'disabled' : '' %>>コードを再送</button>
+            </form>
+            <form method="post" action="/settings/mfa/email/verify" class="form">
+              <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+              <label class="form-field">
+                <span>確認コード</span>
+                <input type="text" name="token" inputmode="numeric" pattern="[0-9]*" maxlength="<%= otpLength || 6 %>" required autocomplete="one-time-code" <%= mfa.email.setupLocked ? 'disabled' : '' %>>
+              </label>
+              <button type="submit" class="btn primary" <%= mfa.email.setupLocked ? 'disabled' : '' %>>コードを確認</button>
+            </form>
+          <% } else { %>
+            <form method="post" action="/settings/mfa/email/start" class="form-inline">
+              <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+              <button type="submit" class="btn secondary">メールコードを有効化</button>
+            </form>
+          <% } %>
+        <% } %>
+      </div>
+
+      <div class="form-divider"></div>
+
+      <% if (mfa.backupCodes && mfa.backupCodes.length > 0) { %>
+        <div class="mfa-backup-codes">
+          <h3>バックアップコード</h3>
+          <p>以下のコードは一度しか使用できません。安全な場所に保管してください。</p>
+          <ul class="mfa-backup-codes__list">
+            <% mfa.backupCodes.forEach(function(code) { %>
+              <li class="mfa-backup-codes__item"><code><%= code %></code></li>
+            <% }) %>
+          </ul>
+          <p class="form-note">ページを離れると再表示できません。必ず控えを取ってください。</p>
+        </div>
+      <% } else if (mfa.totp.isEnabled) { %>
+        <form method="post" action="/settings/mfa/recovery-codes/regenerate" class="form-inline">
+          <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+          <label class="form-field">
+            <span>現在のパスワード</span>
+            <input type="password" name="currentPassword" required autocomplete="current-password">
+          </label>
+          <button type="submit" class="btn secondary">バックアップコードを再発行</button>
+        </form>
+      <% } else { %>
+        <p class="form-note">認証アプリを有効化するとバックアップコードを発行できます。</p>
+      <% } %>
+    </section>
+  </main>
+  <% if (currentUser) { %>
+    <script src="/header.js" defer></script>
+  <% } %>
+</body>
+</html>

@@ -3,14 +3,14 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ロールコード管理 | 勤怠管理システム</title>
+  <title>ロールコード管理 | Attendly</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
   <header class="app-header">
     <div class="app-header__brand">
       <h1 class="app-header__title">
-        <a href="/admin" class="app-header__home-link">勤怠管理システム</a>
+        <a href="/admin" class="app-header__home-link">Attendly</a>
       </h1>
       <span class="app-header__role">テナント管理者</span>
     </div>
@@ -92,7 +92,7 @@
         </label>
         <label class="form-field">
           <span>使用回数上限（任意）</span>
-          <input type="number" name="maxUses" min="1">
+          <input type="number" name="maxUses" min="1" max="<%= roleCodeMaxUsesLimit %>">
         </label>
         <button type="submit" class="btn primary">コードを発行</button>
       </form>
@@ -197,7 +197,7 @@
         return;
       }
 
-      const shareTitle = '勤怠管理システム ロールコード共有';
+      const shareTitle = 'Attendly ロールコード共有';
 
       const fallbackDialog = (() => {
         const backdrop = document.getElementById('share-fallback');

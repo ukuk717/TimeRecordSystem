@@ -35,4 +35,4 @@
 ## CI/CD での取り扱い
 - デプロイ前に `npm run migrate` 等で RDS スキーマをチェックする場合、CI 用 IAM ユーザーには RDS Proxy 経由の最小権限を付与。
 - セキュアな値は環境変数に直接埋め込まず、`aws secretsmanager get-secret-value` でフェッチしてから `npm run deploy` に渡す。
-- 監査用途として Parameter Store のカスタムタグ（例: `Environment=prod`, `Service=TimeRecordSystem`）を付与する。
+- 監査用途として Parameter Store のカスタムタグ（例: `Environment=prod`, `Service=Attendly`）を付与する。

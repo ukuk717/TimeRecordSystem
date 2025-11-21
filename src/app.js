@@ -15,8 +15,11 @@ const {
   getTenantByUid,
   listTenants,
   updateTenantStatus,
+  updateTenantRegistrationSettings,
   createUser,
   updateUserPassword,
+  updateUserProfile,
+  updateUserEmail,
   setMustChangePassword,
   getUserByEmail,
   getUserById,
@@ -58,6 +61,7 @@ const {
   createMfaMethod,
   restoreMfaMethod,
   updateMfaMethod,
+  updateMfaFailureState,
   deleteMfaMethodsByUserAndType,
   touchMfaMethodUsed,
   deleteRecoveryCodesByUser,
@@ -74,6 +78,12 @@ const {
   createTenantAdminMfaResetLog,
   getLatestTenantAdminMfaResetLog,
   markTenantAdminMfaResetRolledBack,
+  createEmailOtpRequest,
+  getEmailOtpRequestById,
+  findEmailOtpRequest,
+  deleteEmailOtpRequests,
+  updateEmailOtpRequest,
+  incrementEmailOtpFailure,
 } = require('./db');
 const {
   validatePassword,
@@ -112,8 +122,17 @@ const {
   hashRecoveryCode,
   normalizeRecoveryCodeInput,
 } = require('./services/mfaService');
+const {
+  OTP_CODE_LENGTH,
+  generateNumericOtp,
+  hashOtpCode,
+  maskEmail,
+} = require('./services/otpService');
+
+const BRAND_NAME = process.env.APP_BRAND_NAME || 'Attendly';
 
 const app = express();
+app.locals.brandName = BRAND_NAME;
 app.set('trust proxy', 1);
 const isTestEnv = process.env.NODE_ENV === 'test';
 const tokens = new Tokens({ saltLength: 16, secretLength: 32 });
@@ -157,14 +176,22 @@ const LOGIN_FAILURE_LIMIT = 5;
 const LOGIN_LOCK_MINUTES = 15;
 const ROLE_CODE_LENGTH = 16;
 const ROLE_CODE_CHARSET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const ROLE_CODE_MAX_USES_LIMIT = 100000;
 const ROLES = {
   PLATFORM: 'platform_admin',
   TENANT: 'tenant_admin',
   EMPLOYEE: 'employee',
 };
 const MFA_CHALLENGE_TTL_MS = 10 * 60 * 1000;
-const MFA_SETTINGS_PATH = '/password/change#mfa';
-const MFA_ISSUER = getMfaIssuer();
+const EMAIL_OTP_TTL_MS = 5 * 60 * 1000;
+const EMAIL_OTP_RESEND_INTERVAL_MS = 60 * 1000;
+const EMAIL_OTP_RATE_LIMIT_MAX_SENDS = 5;
+const EMAIL_OTP_RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
+const EMAIL_OTP_RATE_LIMIT_BLOCK_MS = 15 * 60 * 1000;
+const MFA_MAX_FAILURES = 5;
+const MFA_FAILURE_LOCK_MS = 10 * 60 * 1000;
+const MFA_SETTINGS_PATH = '/account#mfa';
+const MFA_ISSUER = getMfaIssuer(BRAND_NAME);
 const MFA_TRUST_COOKIE_NAME = 'trs_dev';
 const MFA_TRUST_DURATION_DAYS = Number.parseInt(process.env.MFA_TRUST_TTL_DAYS || '30', 10) || 30;
 const MFA_TRUST_DURATION_MS = MFA_TRUST_DURATION_DAYS * 24 * 60 * 60 * 1000;
@@ -893,11 +920,286 @@ function normalizeOtpToken(input) {
     .replace(/[^0-9]/g, '');
 }
 
+function getMfaMethodConfig(method) {
+  if (!method || typeof method !== 'object') {
+    return {};
+  }
+  return method.config && typeof method.config === 'object' ? { ...method.config } : {};
+}
+
+function getMfaLockRemainingMs(method) {
+  const config = getMfaMethodConfig(method);
+  if (!config.lockUntil) {
+    return 0;
+  }
+  const until = Date.parse(config.lockUntil);
+  if (!Number.isFinite(until)) {
+    return 0;
+  }
+  return Math.max(0, until - Date.now());
+}
+
+function isMfaMethodLocked(method) {
+  return getMfaLockRemainingMs(method) > 0;
+}
+
 function rememberBackupCodes(req, codes) {
   if (!req.session) {
     return;
   }
   req.session.mfaBackupCodes = Array.isArray(codes) ? codes : [];
+}
+
+async function resetMfaMethodFailures(method) {
+  if (!method || !method.id) {
+    return;
+  }
+  await updateMfaFailureState(method.id, {
+    reset: true,
+    maxFailures: MFA_MAX_FAILURES,
+    lockDurationMs: MFA_FAILURE_LOCK_MS,
+  });
+}
+
+async function recordMfaMethodFailure(method) {
+  if (!method || !method.id) {
+    return null;
+  }
+  return updateMfaFailureState(method.id, {
+    reset: false,
+    maxFailures: MFA_MAX_FAILURES,
+    lockDurationMs: MFA_FAILURE_LOCK_MS,
+  });
+}
+
+async function deleteEmailOtpChallenges(filters) {
+  await deleteEmailOtpRequests(filters || {});
+}
+
+async function issueEmailOtpChallenge({
+  userId,
+  tenantId = null,
+  roleCodeId = null,
+  purpose,
+  targetEmail,
+  metadata = null,
+  existingChallenge = null,
+}) {
+  const normalizedEmail = normalizeEmail(targetEmail);
+  if (!normalizedEmail) {
+    throw new Error('Email OTP requires valid target email');
+  }
+  if (userId === null || userId === undefined) {
+    const error = new Error('Email OTP requires user context');
+    error.code = 'EMAIL_OTP_USER_REQUIRED';
+    throw error;
+  }
+  const nowMs = Date.now();
+  const rateContext = await loadEmailOtpRateLimitContext({
+    purpose,
+    userId,
+    targetEmail: normalizedEmail,
+    existingChallenge,
+  });
+  const rateState = rateContext.state;
+  if (rateState.blockedUntil && rateState.blockedUntil > nowMs) {
+    if (rateContext.latest) {
+      const blockedMeta = mergeEmailOtpRateLimitMetadata(
+        metadata !== null && metadata !== undefined ? metadata : rateContext.latest.metadata,
+        rateState
+      );
+      await updateEmailOtpRequest(rateContext.latest.id, { metadata: blockedMeta });
+    }
+    const error = new Error('Email OTP rate limit exceeded');
+    error.code = 'EMAIL_OTP_RATE_LIMITED';
+    error.retryAt = rateState.blockedUntil;
+    throw error;
+  }
+  if (rateState.timestamps.length >= EMAIL_OTP_RATE_LIMIT_MAX_SENDS) {
+    const blockedState = applyEmailOtpBlock(rateState, nowMs);
+    if (rateContext.latest) {
+      const blockedMeta = mergeEmailOtpRateLimitMetadata(
+        metadata !== null && metadata !== undefined ? metadata : rateContext.latest.metadata,
+        blockedState
+      );
+      await updateEmailOtpRequest(rateContext.latest.id, { metadata: blockedMeta });
+    }
+    const error = new Error('Email OTP rate limit exceeded');
+    error.code = 'EMAIL_OTP_RATE_LIMITED';
+    error.retryAt = blockedState.blockedUntil;
+    throw error;
+  }
+
+  const code = generateNumericOtp(OTP_CODE_LENGTH);
+  const expiresAt = new Date(nowMs + EMAIL_OTP_TTL_MS).toISOString();
+  const lastSentAt = new Date(nowMs).toISOString();
+  const updatedRateState = applyEmailOtpSend(rateState, nowMs);
+  const baseMetadata =
+    metadata !== null && metadata !== undefined
+      ? metadata
+      : rateContext.latest && rateContext.latest.metadata
+        ? rateContext.latest.metadata
+        : null;
+  const metadataToPersist = mergeEmailOtpRateLimitMetadata(baseMetadata, updatedRateState);
+  const codeHash = hashOtpCode(code);
+
+  if (rateContext.latest) {
+    const updated = await updateEmailOtpRequest(rateContext.latest.id, {
+      codeHash,
+      expiresAt,
+      metadata: metadataToPersist,
+      maxAttempts: MFA_MAX_FAILURES,
+      lastSentAt,
+      consumedAt: null,
+      failedAttempts: 0,
+      lockUntil: null,
+    });
+    return { challenge: updated, code };
+  }
+
+  const challenge = await createEmailOtpRequest({
+    userId,
+    tenantId,
+    roleCodeId,
+    purpose,
+    targetEmail: normalizedEmail,
+    codeHash,
+    expiresAt,
+    metadata: metadataToPersist,
+    maxAttempts: MFA_MAX_FAILURES,
+    lastSentAt,
+  });
+  return { challenge, code };
+}
+
+async function getActiveEmailOtpChallenge(filters = {}) {
+  const nowIso = new Date().toISOString();
+  return findEmailOtpRequest({
+    ...filters,
+    onlyActive: true,
+    activeAt: nowIso,
+  });
+}
+
+function isEmailOtpLocked(challenge) {
+  if (!challenge || !challenge.lock_until) {
+    return false;
+  }
+  const until = Date.parse(challenge.lock_until);
+  return Number.isFinite(until) && until > Date.now();
+}
+
+function isEmailOtpExpired(challenge) {
+  if (!challenge || !challenge.expires_at) {
+    return true;
+  }
+  const expiry = Date.parse(challenge.expires_at);
+  return !Number.isFinite(expiry) || expiry <= Date.now();
+}
+
+function formatEmailOtpRateLimitMessage(retryAt) {
+  if (Number.isFinite(retryAt)) {
+    const waitMs = Math.max(0, retryAt - Date.now());
+    const waitMinutes = Math.max(1, Math.ceil(waitMs / (60 * 1000)));
+    return `リクエストが集中しています。${waitMinutes}分後に再度お試しください。`;
+  }
+  return 'リクエストが集中しています。しばらく待ってから再度お試しください。';
+}
+
+async function recordEmailOtpFailure(challenge) {
+  if (!challenge) {
+    return null;
+  }
+  return incrementEmailOtpFailure(
+    challenge.id,
+    challenge.max_attempts || MFA_MAX_FAILURES,
+    MFA_FAILURE_LOCK_MS
+  );
+}
+
+async function completeEmailOtpChallenge(challenge) {
+  if (!challenge) {
+    return null;
+  }
+  return updateEmailOtpRequest(challenge.id, {
+    consumedAt: new Date().toISOString(),
+    failedAttempts: 0,
+    lockUntil: null,
+  });
+}
+
+async function refreshEmailOtpChallenge(challenge) {
+  if (!challenge) {
+    return null;
+  }
+  return issueEmailOtpChallenge({
+    userId: challenge.user_id,
+    tenantId: challenge.tenant_id,
+    roleCodeId: challenge.role_code_id,
+    purpose: challenge.purpose,
+    targetEmail: challenge.target_email,
+    metadata: challenge.metadata || null,
+    existingChallenge: challenge,
+  });
+}
+
+async function verifyProfileMfa(user, methodType, token) {
+  if (!methodType) {
+    return { ok: false, message: '認証方法を選択してください。' };
+  }
+  const normalized = methodType.toLowerCase();
+  if (normalized === MFA_TYPES.TOTP) {
+    const verifiedTotp = await getVerifiedMfaMethod(user.id, MFA_TYPES.TOTP);
+    if (!verifiedTotp) {
+      return { ok: false, message: '認証アプリは登録されていません。' };
+    }
+    if (isMfaMethodLocked(verifiedTotp)) {
+      return { ok: false, message: '認証アプリはロック中です。10分後に再試行してください。' };
+    }
+    if (!token) {
+      return { ok: false, message: '認証コードを入力してください。' };
+    }
+    const valid = verifyTotpToken({ secret: verifiedTotp.secret, token: normalizeOtpToken(token) });
+    if (!valid) {
+      await recordMfaMethodFailure(verifiedTotp);
+      return { ok: false, message: '認証コードが正しくありません。' };
+    }
+    await resetMfaMethodFailures(verifiedTotp);
+    await touchMfaMethodUsed(verifiedTotp.id);
+    return { ok: true };
+  }
+  if (normalized === MFA_TYPES.EMAIL_OTP) {
+    const emailMethod = await getVerifiedMfaMethod(user.id, MFA_TYPES.EMAIL_OTP);
+    if (!emailMethod) {
+      return { ok: false, message: 'メールコードは登録されていません。' };
+    }
+    const challenge = await getActiveEmailOtpChallenge({
+      userId: user.id,
+      purpose: 'profile_mfa',
+    });
+    if (!challenge) {
+      return { ok: false, message: 'メールコードを送信してから入力してください。' };
+    }
+    if (isEmailOtpLocked(challenge)) {
+      return { ok: false, message: 'メールコードはロック中です。10分後に再試行してください。' };
+    }
+    if (!token) {
+      return { ok: false, message: '確認コードを入力してください。' };
+    }
+    const hashed = hashOtpCode(token);
+    if (hashed !== challenge.code_hash) {
+      const updated = await recordEmailOtpFailure(challenge);
+      const locked = updated && isEmailOtpLocked(updated);
+      return {
+        ok: false,
+        message: locked ? '失敗が続いたためロックされました。10分後に再試行してください。' : '確認コードが正しくありません。',
+      };
+    }
+    await completeEmailOtpChallenge(challenge);
+    await touchMfaMethodUsed(emailMethod.id);
+    return { ok: true };
+  }
+  return { ok: false, message: '未対応の認証方式です。' };
 }
 
 async function createRecoveryCodesForUser(req, userId, count = 10) {
@@ -1018,6 +1320,100 @@ async function issueTrustedDevice(req, res, userId) {
 
 function normalizeEmail(email) {
   return (email || '').trim().toLowerCase();
+}
+
+const EMAIL_OTP_RATE_LIMIT_DEFAULT_STATE = Object.freeze({
+  timestamps: [],
+  blockedUntil: 0,
+  backoffMs: EMAIL_OTP_RATE_LIMIT_BLOCK_MS,
+});
+
+function sanitizeEmailOtpRateLimitState(rawState, nowMs = Date.now()) {
+  const baseState =
+    rawState && typeof rawState === 'object' && !Array.isArray(rawState) ? rawState : {};
+  const state = {
+    ...EMAIL_OTP_RATE_LIMIT_DEFAULT_STATE,
+    ...baseState,
+  };
+  state.timestamps = Array.isArray(state.timestamps)
+    ? state.timestamps
+        .map((value) => Number(value))
+        .filter((value) => Number.isFinite(value) && nowMs - value < EMAIL_OTP_RATE_LIMIT_WINDOW_MS)
+    : [];
+  const backoff = Number(state.backoffMs);
+  state.backoffMs =
+    Number.isFinite(backoff) && backoff > 0
+      ? Math.min(backoff, EMAIL_OTP_RATE_LIMIT_WINDOW_MS)
+      : EMAIL_OTP_RATE_LIMIT_BLOCK_MS;
+  const blocked = Number(state.blockedUntil);
+  state.blockedUntil = Number.isFinite(blocked) && blocked > nowMs ? blocked : 0;
+  return state;
+}
+
+function mergeEmailOtpRateLimitMetadata(metadata, state) {
+  const base =
+    metadata && typeof metadata === 'object' && !Array.isArray(metadata) ? { ...metadata } : {};
+  base.rateLimit = {
+    timestamps: state.timestamps,
+    blockedUntil: state.blockedUntil,
+    backoffMs: state.backoffMs,
+  };
+  return base;
+}
+
+function applyEmailOtpBlock(state, nowMs) {
+  const blockedUntil = nowMs + state.backoffMs;
+  const nextBackoff = Math.min(state.backoffMs * 2, EMAIL_OTP_RATE_LIMIT_WINDOW_MS);
+  return {
+    ...state,
+    blockedUntil,
+    backoffMs: nextBackoff,
+  };
+}
+
+function applyEmailOtpSend(state, nowMs) {
+  const timestamps = state.timestamps
+    .concat(nowMs)
+    .filter((value) => nowMs - value < EMAIL_OTP_RATE_LIMIT_WINDOW_MS);
+  const backoffMs =
+    state.backoffMs && state.backoffMs >= EMAIL_OTP_RATE_LIMIT_BLOCK_MS
+      ? state.backoffMs
+      : EMAIL_OTP_RATE_LIMIT_BLOCK_MS;
+  return {
+    ...state,
+    timestamps,
+    blockedUntil: 0,
+    backoffMs,
+  };
+}
+
+async function loadEmailOtpRateLimitContext({
+  purpose,
+  userId,
+  targetEmail,
+  existingChallenge = null,
+}) {
+  const normalizedEmail = normalizeEmail(targetEmail);
+  let latest = null;
+  if (
+    existingChallenge &&
+    existingChallenge.purpose === purpose &&
+    normalizeEmail(existingChallenge.target_email || existingChallenge.targetEmail) ===
+      normalizedEmail &&
+    existingChallenge.user_id === userId
+  ) {
+    latest = existingChallenge;
+  }
+  if (!latest) {
+    latest = await findEmailOtpRequest({
+      purpose,
+      userId,
+      targetEmail: normalizedEmail,
+    });
+  }
+  const metadata = latest && typeof latest.metadata === 'object' ? latest.metadata : null;
+  const state = sanitizeEmailOtpRateLimitState(metadata?.rateLimit, Date.now());
+  return { latest, state, normalizedEmail };
 }
 
 async function ensureTenantActiveForUser(user) {
@@ -1363,17 +1759,20 @@ app.post('/login', async (req, res) => {
   }
 
   await resetLoginFailures(user.id);
+  await deleteEmailOtpChallenges({ userId: user.id, purpose: 'mfa_login' });
 
   const verifiedTotp = await getVerifiedMfaMethod(user.id, MFA_TYPES.TOTP);
+  const verifiedEmailOtp = await getVerifiedMfaMethod(user.id, MFA_TYPES.EMAIL_OTP);
+  const hasAnyMfa = Boolean(verifiedTotp || verifiedEmailOtp);
   const requiresMfa = requiresMfaForUser(user);
-  if (requiresMfa && !verifiedTotp) {
+  if (requiresMfa && !hasAnyMfa) {
     applyUserSession(req, user, userTenant, { mustEnableMfa: true });
     clearTrustedDeviceCookie(req, res);
     setFlash(req, 'info', 'テナント管理者は多要素認証を有効化してください。');
     return res.redirect(MFA_SETTINGS_PATH);
   }
 
-  if (!verifiedTotp) {
+  if (!hasAnyMfa) {
     const outcome = await completeLogin(req, user);
     return res.redirect(outcome.redirectTo);
   }
@@ -1394,17 +1793,37 @@ app.post('/login', async (req, res) => {
     clearTrustedDeviceCookie(req, res);
   }
 
+  const methods = [];
+  if (verifiedTotp) {
+    methods.push({
+      type: MFA_TYPES.TOTP,
+      label: getMfaChannelLabel(MFA_TYPES.TOTP),
+      isLocked: isMfaMethodLocked(verifiedTotp),
+      lockRemainingMs: getMfaLockRemainingMs(verifiedTotp),
+    });
+  }
+  if (verifiedEmailOtp) {
+    methods.push({
+      type: MFA_TYPES.EMAIL_OTP,
+      label: getMfaChannelLabel(MFA_TYPES.EMAIL_OTP),
+      isLocked: false,
+      lockRemainingMs: 0,
+      targetEmail: maskEmail(verifiedEmailOtp.config?.targetEmail || user.email),
+    });
+  }
+
   setMfaChallenge(req, {
     userId: user.id,
     email: user.email,
-    methods: [MFA_TYPES.TOTP],
+    methods,
     issuedAt: Date.now(),
+    emailTarget: verifiedEmailOtp ? verifiedEmailOtp.config?.targetEmail || user.email : null,
   });
-  setFlash(req, 'info', '認証アプリのコードを入力してください。');
+  setFlash(req, 'info', '多要素認証のコードを入力してください。');
   return res.redirect('/login/mfa');
 });
 
-app.get('/login/mfa', (req, res) => {
+app.get('/login/mfa', async (req, res) => {
   if (req.session.user) {
     return res.redirect('/');
   }
@@ -1418,11 +1837,44 @@ app.get('/login/mfa', (req, res) => {
     setFlash(req, 'error', '多要素認証の有効時間が切れました。もう一度ログインしてください。');
     return res.redirect('/login');
   }
-  const factorLabel = (challenge.methods || []).map(getMfaChannelLabel).join(' / ');
+  const methods = challenge.methods || [];
+  const defaultMethod =
+    methods.find((entry) => entry && !entry.isLocked)?.type ||
+    (methods[0] ? methods[0].type : MFA_TYPES.TOTP);
+  let emailState = null;
+  const emailMethod = methods.find((entry) => entry.type === MFA_TYPES.EMAIL_OTP);
+  if (emailMethod) {
+    const activeChallenge = await getActiveEmailOtpChallenge({
+      userId: challenge.userId,
+      purpose: 'mfa_login',
+    });
+    let resendWaitSeconds = 0;
+    if (activeChallenge && activeChallenge.last_sent_at) {
+      const lastSent = Date.parse(activeChallenge.last_sent_at);
+      if (Number.isFinite(lastSent)) {
+        const nextAvailable = lastSent + EMAIL_OTP_RESEND_INTERVAL_MS;
+        resendWaitSeconds = Math.max(0, Math.ceil((nextAvailable - Date.now()) / 1000));
+      }
+    }
+    emailState = {
+      maskedTarget: emailMethod.targetEmail || '',
+      hasChallenge: Boolean(activeChallenge),
+      expiresAtDisplay: activeChallenge ? formatDisplayDateTime(activeChallenge.expires_at) : null,
+      isLocked: isEmailOtpLocked(activeChallenge),
+      lockUntilDisplay:
+        activeChallenge && activeChallenge.lock_until
+          ? formatDisplayDateTime(activeChallenge.lock_until)
+          : null,
+      resendWaitSeconds,
+    };
+  }
   return res.render('login_mfa', {
-    factorLabel: factorLabel || '多要素認証',
+    methods,
+    defaultMethod,
     email: challenge.email || '',
     trustDurationDays: MFA_TRUST_DURATION_DAYS,
+    emailState,
+    otpLength: OTP_CODE_LENGTH,
   });
 });
 
@@ -1430,6 +1882,74 @@ app.get('/login/mfa/cancel', (req, res) => {
   clearPendingMfa(req);
   setFlash(req, 'info', '多要素認証をキャンセルしました。再度ログインしてください。');
   return res.redirect('/login');
+});
+
+app.post('/login/mfa/email/send', async (req, res) => {
+  if (req.session.user) {
+    return res.redirect('/');
+  }
+  const challenge = getMfaChallenge(req);
+  if (!challenge) {
+    setFlash(req, 'error', '多要素認証の手続きが見つかりません。再度ログインしてください。');
+    return res.redirect('/login');
+  }
+  if (!challenge.emailTarget) {
+    setFlash(req, 'error', 'メールコードは利用できません。認証アプリをご利用ください。');
+    return res.redirect('/login/mfa');
+  }
+  const user = await getUserById(challenge.userId);
+  if (!user || user.status !== USER_STATUS.ACTIVE) {
+    clearPendingMfa(req);
+    setFlash(req, 'error', 'ユーザー情報を確認できませんでした。再度ログインしてください。');
+    return res.redirect('/login');
+  }
+  const emailMethod = await getVerifiedMfaMethod(user.id, MFA_TYPES.EMAIL_OTP);
+  if (!emailMethod) {
+    setFlash(req, 'error', 'メールコードの設定が変更されました。再度ログインしてください。');
+    clearPendingMfa(req);
+    return res.redirect('/login');
+  }
+  const existingChallenge = await getActiveEmailOtpChallenge({
+    userId: user.id,
+    purpose: 'mfa_login',
+  });
+  if (existingChallenge) {
+    if (isEmailOtpLocked(existingChallenge)) {
+      setFlash(req, 'error', 'メールコードはロック中です。10分後に再度お試しください。');
+      return res.redirect('/login/mfa');
+    }
+    const lastSent = Date.parse(existingChallenge.last_sent_at);
+    if (Number.isFinite(lastSent)) {
+      const retryAt = lastSent + EMAIL_OTP_RESEND_INTERVAL_MS;
+      if (retryAt > Date.now()) {
+        const waitSeconds = Math.ceil((retryAt - Date.now()) / 1000);
+        setFlash(req, 'error', `コードの再送は${waitSeconds}秒後に実行できます。`);
+        return res.redirect('/login/mfa');
+      }
+    }
+  }
+
+  let issued;
+  try {
+    issued = await issueEmailOtpChallenge({
+      userId: user.id,
+      tenantId: user.tenant_id || null,
+      purpose: 'mfa_login',
+      targetEmail: challenge.emailTarget || emailMethod.config?.targetEmail || user.email,
+    });
+  } catch (error) {
+    if (error && error.code === 'EMAIL_OTP_RATE_LIMITED') {
+      setFlash(req, 'error', formatEmailOtpRateLimitMessage(error.retryAt));
+    } else {
+      setFlash(req, 'error', 'メールコードの送信にエラーが発生しました。時間をおいて再実行してください。');
+    }
+    return res.redirect('/login/mfa');
+  }
+
+  const { challenge: otpRecord } = issued;
+  challenge.emailChallengeId = otpRecord.id;
+  setFlash(req, 'success', '確認コードを送信しました。メールをご確認ください。');
+  return res.redirect('/login/mfa');
 });
 
 app.post('/login/mfa', async (req, res) => {
@@ -1446,7 +1966,8 @@ app.post('/login/mfa', async (req, res) => {
     setFlash(req, 'error', '多要素認証の有効時間が切れました。もう一度ログインしてください。');
     return res.redirect('/login');
   }
-  const authMode = (req.body.authMode || '').toLowerCase();
+  const methods = challenge.methods || [];
+  const authModeRaw = (req.body.authMode || '').toLowerCase();
   const token = normalizeOtpToken(req.body.token);
   const backupCodeInput = normalizeRecoveryCodeInput(req.body.backupCode || '');
   const rememberDevice = req.body.rememberDevice === 'on';
@@ -1457,9 +1978,9 @@ app.post('/login/mfa', async (req, res) => {
     return res.redirect('/login');
   }
 
-  // 現状は TOTP のみ対応しており、将来的にメール/SMS OTP を追加できる構造にしている。
-  const requiredMethods = challenge.methods || [];
-  const useBackupMode = authMode === 'backup' || (!token && backupCodeInput);
+  const hasTotpMethod = methods.some((entry) => entry.type === MFA_TYPES.TOTP);
+  const hasEmailMethod = methods.some((entry) => entry.type === MFA_TYPES.EMAIL_OTP);
+  const useBackupMode = authModeRaw === 'backup' || (!authModeRaw && backupCodeInput);
   if (useBackupMode) {
     if (!backupCodeInput) {
       setFlash(req, 'error', 'バックアップコードを入力してください。');
@@ -1479,38 +2000,106 @@ app.post('/login/mfa', async (req, res) => {
     return res.redirect(outcome.redirectTo);
   }
 
+  let authMode = authModeRaw;
+  if (!authMode) {
+    if (hasTotpMethod) {
+      authMode = 'totp';
+    } else if (hasEmailMethod) {
+      authMode = 'email';
+    }
+  }
+
+  if (authMode === 'email') {
+    if (!hasEmailMethod) {
+      setFlash(req, 'error', 'メールコードは利用できません。認証アプリを選択してください。');
+      return res.redirect('/login/mfa');
+    }
+    if (!token) {
+      setFlash(req, 'error', '確認コードを入力してください。');
+      return res.redirect('/login/mfa');
+    }
+    const emailChallenge = await getActiveEmailOtpChallenge({
+      userId: challenge.userId,
+      purpose: 'mfa_login',
+    });
+    if (!emailChallenge) {
+      setFlash(req, 'error', 'メールコードの送信を先に実行してください。');
+      return res.redirect('/login/mfa');
+    }
+    if (isEmailOtpLocked(emailChallenge)) {
+      setFlash(req, 'error', 'メールコードはロック中です。10分後に再度お試しください。');
+      return res.redirect('/login/mfa');
+    }
+    if (isEmailOtpExpired(emailChallenge)) {
+      setFlash(req, 'error', 'メールコードの有効期限が切れました。再送してください。');
+      return res.redirect('/login/mfa');
+    }
+    const hashedCode = hashOtpCode(token);
+    if (hashedCode !== emailChallenge.code_hash) {
+      const updated = await recordEmailOtpFailure(emailChallenge);
+      if (updated && isEmailOtpLocked(updated)) {
+        setFlash(req, 'error', '連続で失敗したため、メールコードを10分間ロックしました。');
+      } else {
+        setFlash(req, 'error', '確認コードが正しくありません。');
+      }
+      return res.redirect('/login/mfa');
+    }
+    await completeEmailOtpChallenge(emailChallenge);
+    const emailMethod = await getVerifiedMfaMethod(user.id, MFA_TYPES.EMAIL_OTP);
+    if (emailMethod) {
+      await touchMfaMethodUsed(emailMethod.id);
+    }
+    let trustDeviceFailed = false;
+    if (rememberDevice) {
+      const issued = await issueTrustedDevice(req, res, user.id);
+      if (!issued) {
+        trustDeviceFailed = true;
+      }
+    } else {
+      clearTrustedDeviceCookie(req, res);
+    }
+    clearPendingMfa(req);
+    const completeOptions = trustDeviceFailed
+      ? { appendFlashMessage: 'デバイスの記憶に失敗しました。後でもう一度設定してください。' }
+      : undefined;
+    const outcome = await completeLogin(req, user, completeOptions || {});
+    return res.redirect(outcome.redirectTo);
+  }
+
+  if (!hasTotpMethod) {
+    setFlash(req, 'error', '認証アプリが利用できません。メールコードをご利用ください。');
+    return res.redirect('/login/mfa');
+  }
   if (!token) {
     setFlash(req, 'error', '認証コードを入力してください。');
     return res.redirect('/login/mfa');
   }
-
-  let trustDeviceFailed = false;
-  // eslint-disable-next-line no-restricted-syntax
-  for (const methodType of requiredMethods) {
-    if (methodType === MFA_TYPES.TOTP) {
-      const verifiedTotp = await getVerifiedMfaMethod(user.id, MFA_TYPES.TOTP);
-      if (!verifiedTotp) {
-        clearPendingMfa(req);
-        setFlash(req, 'error', '多要素認証の設定が変更されました。再度ログインしてください。');
-        return res.redirect('/login');
-      }
-      const valid = verifyTotpToken({ secret: verifiedTotp.secret, token });
-      if (!valid) {
-        setFlash(req, 'error', '認証コードが正しくありません。');
-        return res.redirect('/login/mfa');
-      }
-      await touchMfaMethodUsed(verifiedTotp.id);
-      if (rememberDevice) {
-        const issued = await issueTrustedDevice(req, res, user.id);
-        if (!issued) {
-          trustDeviceFailed = true;
-        }
-      }
-      continue;
-    }
+  const verifiedTotp = await getVerifiedMfaMethod(user.id, MFA_TYPES.TOTP);
+  if (!verifiedTotp) {
     clearPendingMfa(req);
-    setFlash(req, 'error', '未対応の多要素認証方式です。');
+    setFlash(req, 'error', '多要素認証の設定が変更されました。再度ログインしてください。');
     return res.redirect('/login');
+  }
+  if (isMfaMethodLocked(verifiedTotp)) {
+    setFlash(req, 'error', '認証アプリはロック中です。10分後に再試行してください。');
+    return res.redirect('/login/mfa');
+  }
+  const valid = verifyTotpToken({ secret: verifiedTotp.secret, token });
+  if (!valid) {
+    await recordMfaMethodFailure(verifiedTotp);
+    setFlash(req, 'error', '認証コードが正しくありません。');
+    return res.redirect('/login/mfa');
+  }
+  await resetMfaMethodFailures(verifiedTotp);
+  await touchMfaMethodUsed(verifiedTotp.id);
+  let trustDeviceFailed = false;
+  if (rememberDevice) {
+    const issued = await issueTrustedDevice(req, res, user.id);
+    if (!issued) {
+      trustDeviceFailed = true;
+    }
+  } else {
+    clearTrustedDeviceCookie(req, res);
   }
 
   clearPendingMfa(req);
@@ -1548,12 +2137,12 @@ app.get('/register', (req, res) => {
 
 app.post('/register', async (req, res) => {
   const roleCodeValue = (req.body.roleCode || '').trim().toUpperCase();
-  const firstNameResult = validateNameField('名', req.body.firstName);
+  const firstNameResult = validateNameField('姓', req.body.firstName);
   if (!firstNameResult.valid) {
     setFlash(req, 'error', firstNameResult.message);
     return res.redirect('/register');
   }
-  const lastNameResult = validateNameField('姓', req.body.lastName);
+  const lastNameResult = validateNameField('名', req.body.lastName);
   if (!lastNameResult.valid) {
     setFlash(req, 'error', lastNameResult.message);
     return res.redirect('/register');
@@ -1563,6 +2152,7 @@ app.post('/register', async (req, res) => {
     setFlash(req, 'error', 'メールアドレスを入力してください。');
     return res.redirect('/register');
   }
+  const verificationCodeInput = normalizeOtpToken(req.body.verificationCode);
   const newPassword = req.body.password || '';
 
   if (!roleCodeValue) {
@@ -1576,7 +2166,7 @@ app.post('/register', async (req, res) => {
     return res.redirect('/register');
   }
   if (roleCode.is_disabled) {
-    setFlash(req, 'error', 'このロールコードは無効化されています。');
+    setFlash(req, 'error', 'このロールコードは利用できません。');
     return res.redirect('/register');
   }
   if (roleCode.expires_at && Date.parse(roleCode.expires_at) <= Date.now()) {
@@ -1585,12 +2175,6 @@ app.post('/register', async (req, res) => {
   }
   if (roleCode.max_uses !== null && roleCode.usage_count >= roleCode.max_uses) {
     setFlash(req, 'error', 'ロールコードの利用上限に達しています。');
-    return res.redirect('/register');
-  }
-
-  const existingUser = await getUserByEmail(email);
-  if (existingUser) {
-    setFlash(req, 'error', 'このメールアドレスは既に登録されています。');
     return res.redirect('/register');
   }
 
@@ -1609,8 +2193,53 @@ app.post('/register', async (req, res) => {
   const hashed = await hashPassword(newPassword);
   const username = `${lastNameResult.value}${firstNameResult.value}`;
 
-  try {
-    await createUser({
+  const existingUser = await getUserByEmail(email);
+  const isActiveUser = existingUser && existingUser.status === USER_STATUS.ACTIVE;
+  const isDeactivatedUser = existingUser && Boolean(existingUser.deactivated_at);
+  const isEmployeeAccount = existingUser && existingUser.role === ROLES.EMPLOYEE;
+  const isSameTenant = existingUser && existingUser.tenant_id === tenant.id;
+
+  if (!tenant.require_employee_email_verification) {
+    if (existingUser) {
+      setFlash(req, 'error', 'このメールアドレスは既に登録されています。');
+      return res.redirect('/register');
+    }
+    try {
+      await createUser({
+        tenantId: tenant.id,
+        username,
+        email,
+        passwordHash: hashed,
+        role: ROLES.EMPLOYEE,
+        firstName: firstNameResult.value,
+        lastName: lastNameResult.value,
+      });
+      await incrementRoleCodeUsage(roleCode.id);
+      const updatedRoleCode = await getRoleCodeById(roleCode.id);
+      if (
+        updatedRoleCode &&
+        updatedRoleCode.max_uses !== null &&
+        updatedRoleCode.usage_count >= updatedRoleCode.max_uses
+      ) {
+        await disableRoleCode(updatedRoleCode.id);
+      }
+      setFlash(req, 'success', 'アカウントを作成しました。ログインしてください。');
+      return res.redirect('/login');
+    } catch (error) {
+      console.error('[register] 社員アカウント作成に失敗しました', error);
+      setFlash(req, 'error', 'アカウント作成にエラーが発生しました。');
+      return res.redirect('/register');
+    }
+  }
+
+  if (existingUser && (!isEmployeeAccount || !isSameTenant || isActiveUser || isDeactivatedUser)) {
+    setFlash(req, 'error', 'このメールアドレスは利用できません。');
+    return res.redirect('/register');
+  }
+
+  let pendingUser = existingUser;
+  if (!pendingUser) {
+    pendingUser = await createUser({
       tenantId: tenant.id,
       username,
       email,
@@ -1618,9 +2247,56 @@ app.post('/register', async (req, res) => {
       role: ROLES.EMPLOYEE,
       firstName: firstNameResult.value,
       lastName: lastNameResult.value,
+      status: USER_STATUS.INACTIVE,
     });
-    await incrementRoleCodeUsage(roleCode.id);
-    const updatedRoleCode = await getRoleCodeById(roleCode.id);
+  } else {
+    await updateUserPassword(pendingUser.id, hashed, false);
+    await updateUserProfile(pendingUser.id, {
+      firstName: firstNameResult.value,
+      lastName: lastNameResult.value,
+    });
+  }
+
+  if (verificationCodeInput) {
+    const existingChallenge = await getActiveEmailOtpChallenge({
+      userId: pendingUser.id,
+      purpose: 'employee_register',
+    });
+    if (!existingChallenge || normalizeEmail(existingChallenge.target_email) !== email) {
+      setFlash(req, 'error', '入力された確認コードを検証できません。新しいコードを再送してください。');
+      return res.redirect('/register');
+    }
+    if (isEmailOtpLocked(existingChallenge)) {
+      setFlash(req, 'error', '確認コードはロック中です。10分後に再度お試しください。');
+      return res.redirect('/register');
+    }
+    if (isEmailOtpExpired(existingChallenge)) {
+      setFlash(req, 'error', '確認コードの有効期限が切れています。もう一度コードを送信してください。');
+      await deleteEmailOtpChallenges({ id: existingChallenge.id });
+      return res.redirect('/register');
+    }
+    const hashedInput = hashOtpCode(verificationCodeInput);
+    if (hashedInput !== existingChallenge.code_hash) {
+      await recordEmailOtpFailure(existingChallenge);
+      setFlash(req, 'error', '確認コードが一致しません。再度入力してください。');
+      return res.redirect('/register');
+    }
+    const latestRoleCode = await getRoleCodeById(roleCode.id);
+    if (
+      !latestRoleCode ||
+      latestRoleCode.is_disabled ||
+      (latestRoleCode.expires_at && Date.parse(latestRoleCode.expires_at) <= Date.now()) ||
+      (latestRoleCode.max_uses !== null && latestRoleCode.usage_count >= latestRoleCode.max_uses)
+    ) {
+      setFlash(req, 'error', 'ロールコードが無効になっています。別のコードを利用してください。');
+      await deleteEmailOtpChallenges({ id: existingChallenge.id });
+      return res.redirect('/register');
+    }
+    await completeEmailOtpChallenge(existingChallenge);
+    await deleteEmailOtpChallenges({ id: existingChallenge.id });
+    await updateUserStatus(pendingUser.id, USER_STATUS.ACTIVE);
+    await incrementRoleCodeUsage(latestRoleCode.id);
+    const updatedRoleCode = await getRoleCodeById(latestRoleCode.id);
     if (
       updatedRoleCode &&
       updatedRoleCode.max_uses !== null &&
@@ -1628,13 +2304,193 @@ app.post('/register', async (req, res) => {
     ) {
       await disableRoleCode(updatedRoleCode.id);
     }
-    setFlash(req, 'success', 'アカウントを作成しました。ログインしてください。');
+    delete req.session.pendingRegistration;
+    setFlash(req, 'success', '登録が完了しました。ログインしてください。');
     return res.redirect('/login');
+  }
+
+  try {
+    const { challenge } = await issueEmailOtpChallenge({
+      userId: pendingUser.id,
+      tenantId: tenant.id,
+      roleCodeId: roleCode.id,
+      purpose: 'employee_register',
+      targetEmail: email,
+      metadata: {
+        tenantId: tenant.id,
+        roleCodeId: roleCode.id,
+      },
+    });
+    req.session.pendingRegistration = {
+      challengeId: challenge.id,
+      tenantId: tenant.id,
+      roleCodeId: roleCode.id,
+      userId: pendingUser.id,
+      email,
+    };
+    setFlash(
+      req,
+      'info',
+      '確認コードをメールで送信しました。5分以内に入力すると登録が完了します。'
+    );
+    return res.redirect('/register/verify');
   } catch (error) {
-    console.error('[register] 従業員アカウント作成に失敗しました', error);
-    setFlash(req, 'error', 'アカウント作成中にエラーが発生しました。');
+    console.error('[register] 従業員メール認証コードの送信に失敗しました', error);
+    if (error && error.code === 'EMAIL_OTP_RATE_LIMITED') {
+      setFlash(req, 'error', formatEmailOtpRateLimitMessage(error.retryAt));
+    } else {
+      setFlash(req, 'error', '確認コードの送信に失敗しました。時間を置いて再試行してください。');
+    }
     return res.redirect('/register');
   }
+});
+
+app.get('/register/verify', (req, res) => {
+  if (!req.session.pendingRegistration) {
+    return res.redirect('/register');
+  }
+  return res.render('register_verify', {
+    email: req.session.pendingRegistration.email || '',
+  });
+});
+
+app.post('/register/verify/resend', async (req, res) => {
+  const pending = req.session.pendingRegistration;
+  if (!pending || !pending.challengeId) {
+    setFlash(req, 'error', '確認手続きが見つかりません。');
+    return res.redirect('/register');
+  }
+  const challenge = await getEmailOtpRequestById(pending.challengeId);
+  if (!challenge || challenge.purpose !== 'employee_register') {
+    setFlash(req, 'error', '確認手続きが見つかりません。');
+    return res.redirect('/register');
+  }
+  if (pending.userId && challenge.user_id && pending.userId !== challenge.user_id) {
+    setFlash(req, 'error', '確認コードの再送に失敗しました。最初からやり直してください。');
+    return res.redirect('/register');
+  }
+  if (isEmailOtpLocked(challenge)) {
+    setFlash(req, 'error', '確認コードはロック中です。10分後に再度お試しください。');
+    return res.redirect('/register/verify');
+  }
+  const lastSent = Date.parse(challenge.last_sent_at);
+  if (Number.isFinite(lastSent)) {
+    const nextSend = lastSent + EMAIL_OTP_RESEND_INTERVAL_MS;
+    if (nextSend > Date.now()) {
+      const waitSeconds = Math.ceil((nextSend - Date.now()) / 1000);
+      setFlash(req, 'error', `コードの再送は${waitSeconds}秒後に実行できます。`);
+      return res.redirect('/register/verify');
+    }
+  }
+  try {
+    const { challenge: refreshed } = await refreshEmailOtpChallenge(challenge);
+    req.session.pendingRegistration.challengeId = refreshed.id;
+    req.session.pendingRegistration.email = refreshed.target_email;
+    req.session.pendingRegistration.userId = refreshed.user_id;
+    req.session.pendingRegistration.roleCodeId =
+      refreshed.role_code_id || pending.roleCodeId || null;
+    req.session.pendingRegistration.tenantId =
+      pending.tenantId || refreshed.tenant_id || (refreshed.metadata || {}).tenantId || null;
+    setFlash(req, 'success', '確認コードを再送しました。');
+  } catch (error) {
+    if (error && error.code === 'EMAIL_OTP_RATE_LIMITED') {
+      setFlash(req, 'error', formatEmailOtpRateLimitMessage(error.retryAt));
+    } else {
+      setFlash(req, 'error', '確認コードの再送に失敗しました。時間を空けて再実行してください。');
+    }
+  }
+  return res.redirect('/register/verify');
+});
+
+app.post('/register/verify/cancel', async (req, res) => {
+  const pending = req.session.pendingRegistration;
+  if (pending && pending.challengeId) {
+    await deleteEmailOtpChallenges({ id: pending.challengeId });
+  }
+  delete req.session.pendingRegistration;
+  setFlash(req, 'info', 'メール確認をキャンセルしました。最初から登録し直してください。');
+  return res.redirect('/register');
+});
+
+app.post('/register/verify', async (req, res) => {
+  const pending = req.session.pendingRegistration;
+  if (!pending || !pending.challengeId) {
+    setFlash(req, 'error', '確認手続きが見つかりません。');
+    return res.redirect('/register');
+  }
+  const challenge = await getEmailOtpRequestById(pending.challengeId);
+  if (!challenge || challenge.purpose !== 'employee_register') {
+    setFlash(req, 'error', '確認手続きが見つかりません。最初からやり直してください。');
+    return res.redirect('/register');
+  }
+  const token = normalizeOtpToken(req.body.token);
+  if (!token) {
+    setFlash(req, 'error', '確認コードを入力してください。');
+    return res.redirect('/register/verify');
+  }
+  if (pending.userId && challenge.user_id && pending.userId !== challenge.user_id) {
+    setFlash(req, 'error', '確認コードの検証に失敗しました。最初からやり直してください。');
+    return res.redirect('/register');
+  }
+  if (isEmailOtpLocked(challenge)) {
+    setFlash(req, 'error', '確認コードはロック中です。10分後に再度お試しください。');
+    return res.redirect('/register/verify');
+  }
+  if (isEmailOtpExpired(challenge)) {
+    setFlash(req, 'error', '確認コードの有効期限が切れています。もう一度登録してください。');
+    return res.redirect('/register');
+  }
+  const hashedToken = hashOtpCode(token);
+  if (hashedToken !== challenge.code_hash) {
+    const updated = await recordEmailOtpFailure(challenge);
+    const locked = updated && isEmailOtpLocked(updated);
+    setFlash(
+      req,
+      'error',
+      locked ? '連続して失敗したため、確認コードがロックされました。10分後に再試行してください。' : '確認コードが一致しません。'
+    );
+    return res.redirect('/register/verify');
+  }
+  const roleCodeId = pending.roleCodeId || challenge.role_code_id || (challenge.metadata || {}).roleCodeId;
+  if (!roleCodeId) {
+    setFlash(req, 'error', '登録情報を確認できませんでした。');
+    return res.redirect('/register');
+  }
+  const roleCodeRecord = await getRoleCodeById(roleCodeId);
+  if (
+    !roleCodeRecord ||
+    roleCodeRecord.is_disabled ||
+    (roleCodeRecord.expires_at && Date.parse(roleCodeRecord.expires_at) <= Date.now()) ||
+    (roleCodeRecord.max_uses !== null && roleCodeRecord.usage_count >= roleCodeRecord.max_uses)
+  ) {
+    setFlash(req, 'error', 'ロールコードの有効期限切れまたは上限超過のため登録できません。');
+    await deleteEmailOtpChallenges({ id: challenge.id });
+    delete req.session.pendingRegistration;
+    return res.redirect('/register');
+  }
+  const user = challenge.user_id ? await getUserById(challenge.user_id) : null;
+  if (!user) {
+    setFlash(req, 'error', '登録対象のユーザーが見つかりません。');
+    await deleteEmailOtpChallenges({ id: challenge.id });
+    delete req.session.pendingRegistration;
+    return res.redirect('/register');
+  }
+
+  await completeEmailOtpChallenge(challenge);
+  await deleteEmailOtpChallenges({ id: challenge.id });
+  await updateUserStatus(user.id, USER_STATUS.ACTIVE);
+  await incrementRoleCodeUsage(roleCodeRecord.id);
+  const updatedRoleCode = await getRoleCodeById(roleCodeRecord.id);
+  if (
+    updatedRoleCode &&
+    updatedRoleCode.max_uses !== null &&
+    updatedRoleCode.usage_count >= updatedRoleCode.max_uses
+  ) {
+    await disableRoleCode(updatedRoleCode.id);
+  }
+  delete req.session.pendingRegistration;
+  setFlash(req, 'success', '登録が完了しました。ログインしてください。');
+  return res.redirect('/login');
 });
 
 app.get('/password/reset', (req, res) => {
@@ -1741,7 +2597,7 @@ app.post('/password/reset/:token', async (req, res) => {
   return res.redirect('/login');
 });
 
-app.get('/password/change', requireRole(ROLES.PLATFORM, ROLES.TENANT, ROLES.EMPLOYEE), async (req, res) => {
+app.get('/account', requireRole(ROLES.PLATFORM, ROLES.TENANT, ROLES.EMPLOYEE), async (req, res) => {
   const user = await getUserById(req.session.user.id);
   if (!user) {
     delete req.session.user;
@@ -1751,6 +2607,55 @@ app.get('/password/change', requireRole(ROLES.PLATFORM, ROLES.TENANT, ROLES.EMPL
   const methods = await listMfaMethodsByUser(req.session.user.id);
   const totpActive = methods.find((method) => method.type === MFA_TYPES.TOTP && method.is_verified);
   const totpPending = methods.find((method) => method.type === MFA_TYPES.TOTP && !method.is_verified);
+  const emailMethod = methods.find((method) => method.type === MFA_TYPES.EMAIL_OTP && method.is_verified);
+  const emailSetupChallenge = await getActiveEmailOtpChallenge({
+    userId: user.id,
+    purpose: 'mfa_email_setup',
+  });
+  const emailChangeChallenge = await getActiveEmailOtpChallenge({
+    userId: user.id,
+    purpose: 'email_change',
+  });
+  const profileMfaChallenge = await getActiveEmailOtpChallenge({
+    userId: user.id,
+    purpose: 'profile_mfa',
+  });
+  const hasSecondFactor = Boolean(totpActive || emailMethod);
+  const emailMfaAvailable = Boolean(emailMethod);
+  const profileMfaOptions = [];
+  if (totpActive) {
+    profileMfaOptions.push({ value: MFA_TYPES.TOTP, label: '認証アプリ (TOTP)' });
+  }
+  if (emailMfaAvailable) {
+    profileMfaOptions.push({ value: MFA_TYPES.EMAIL_OTP, label: 'メールコード' });
+  }
+  const profileMfa = emailMfaAvailable
+    ? {
+        canSendEmailCode: true,
+        isLocked: profileMfaChallenge ? isEmailOtpLocked(profileMfaChallenge) : false,
+        lockUntilDisplay: profileMfaChallenge
+          ? formatDisplayDateTime(profileMfaChallenge.lock_until)
+          : null,
+        resendWaitSeconds: (() => {
+          if (!profileMfaChallenge) {
+            return 0;
+          }
+          const lastSent = Date.parse(profileMfaChallenge.last_sent_at);
+          if (!Number.isFinite(lastSent)) {
+            return 0;
+          }
+          const nextSend = lastSent + EMAIL_OTP_RESEND_INTERVAL_MS;
+          if (nextSend <= Date.now()) {
+            return 0;
+          }
+          return Math.ceil((nextSend - Date.now()) / 1000);
+        })(),
+      }
+    : null;
+  const backupCodes = req.session.mfaBackupCodes || null;
+  if (req.session.mfaBackupCodes) {
+    delete req.session.mfaBackupCodes;
+  }
 
   let pendingSetup = null;
   if (totpPending && totpPending.secret) {
@@ -1772,9 +2677,17 @@ app.get('/password/change', requireRole(ROLES.PLATFORM, ROLES.TENANT, ROLES.EMPL
     };
   }
 
-  res.render('password_change', {
-    action: '/password/change',
+  res.render('account_settings', {
     minPasswordLength: PASSWORD_MIN_LENGTH,
+    profile: {
+      firstName: user.first_name || '',
+      lastName: user.last_name || '',
+      email: user.email || '',
+      phoneNumber: user.phone_number || '',
+    },
+    requireMfaForProfileChange: hasSecondFactor,
+    profileMfaOptions,
+    profileMfa,
     mfa: {
       supportedChannels: MFA_CHANNELS,
       totp: {
@@ -1783,41 +2696,294 @@ app.get('/password/change', requireRole(ROLES.PLATFORM, ROLES.TENANT, ROLES.EMPL
         lastUsedAtDisplay: formatDisplayDateTime(totpActive?.last_used_at),
         pendingSetup,
       },
+      email: {
+        isEnabled: Boolean(emailMethod && emailMethod.is_verified),
+        pendingSetup: !emailMethod ? emailSetupChallenge : null,
+        targetEmail: emailMethod?.config?.targetEmail || user.email,
+        setupExpiresDisplay: emailSetupChallenge
+          ? formatDisplayDateTime(emailSetupChallenge.expires_at)
+          : null,
+        setupLocked: emailSetupChallenge ? isEmailOtpLocked(emailSetupChallenge) : false,
+      },
+      backupCodes,
     },
+    emailChange: emailChangeChallenge
+      ? {
+          targetEmail: emailChangeChallenge.target_email,
+          expiresDisplay: formatDisplayDateTime(emailChangeChallenge.expires_at),
+          isLocked: isEmailOtpLocked(emailChangeChallenge),
+          lockUntilDisplay: formatDisplayDateTime(emailChangeChallenge.lock_until),
+        }
+      : null,
+    otpLength: OTP_CODE_LENGTH,
   });
 });
 
+app.get('/password/change', requireRole(ROLES.PLATFORM, ROLES.TENANT, ROLES.EMPLOYEE), (req, res) => {
+  return res.redirect('/account');
+});
+
+async function handlePasswordChange(req, res) {
+  const { currentPassword, newPassword } = req.body;
+  const user = await getUserById(req.session.user.id);
+  if (!user) {
+    setFlash(req, 'error', 'ユーザーが見つかりません。');
+    return res.redirect('/account');
+  }
+
+  const ok = await comparePassword(currentPassword || '', user.password_hash);
+  if (!ok) {
+    setFlash(req, 'error', '現在のパスワードが正しくありません。');
+    return res.redirect('/account');
+  }
+
+  const validation = validatePassword(newPassword || '');
+  if (!validation.valid) {
+    setFlash(req, 'error', validation.message);
+    return res.redirect('/account');
+  }
+
+  const hashed = await hashPassword(newPassword);
+  await updateUserPassword(user.id, hashed, false);
+  await setMustChangePassword(user.id, false);
+  if (req.session.user) {
+    delete req.session.user.mustChangePassword;
+  }
+  setFlash(req, 'success', 'パスワードを変更しました。');
+  return res.redirect('/account');
+}
+
+app.post(
+  '/account/password',
+  requireRole(ROLES.PLATFORM, ROLES.TENANT, ROLES.EMPLOYEE),
+  handlePasswordChange
+);
 app.post(
   '/password/change',
   requireRole(ROLES.PLATFORM, ROLES.TENANT, ROLES.EMPLOYEE),
+  handlePasswordChange
+);
+
+app.post(
+  '/account/mfa/email/send',
+  requireRole(ROLES.PLATFORM, ROLES.TENANT, ROLES.EMPLOYEE),
   async (req, res) => {
-    const { currentPassword, newPassword } = req.body;
     const user = await getUserById(req.session.user.id);
     if (!user) {
-      setFlash(req, 'error', 'ユーザーが見つかりません。');
-      return res.redirect('/password/change');
+      delete req.session.user;
+      setFlash(req, 'error', 'ユーザー情報を再取得できませんでした。再度ログインしてください。');
+      return res.redirect('/login');
     }
-
-    const ok = await comparePassword(currentPassword || '', user.password_hash);
-    if (!ok) {
-      setFlash(req, 'error', '現在のパスワードが正しくありません。');
-      return res.redirect('/password/change');
+    const emailMethod = await getVerifiedMfaMethod(user.id, MFA_TYPES.EMAIL_OTP);
+    if (!emailMethod) {
+      setFlash(req, 'error', 'メールコードは登録されていません。');
+      return res.redirect('/account#mfa');
     }
-
-    const validation = validatePassword(newPassword || '');
-    if (!validation.valid) {
-      setFlash(req, 'error', validation.message);
-      return res.redirect('/password/change');
+    const existing = await getActiveEmailOtpChallenge({
+      userId: user.id,
+      purpose: 'profile_mfa',
+    });
+    if (existing) {
+      if (isEmailOtpLocked(existing)) {
+        setFlash(req, 'error', 'メールコードはロック中です。10分後に再試行してください。');
+        return res.redirect('/account');
+      }
+      const lastSent = Date.parse(existing.last_sent_at);
+      if (Number.isFinite(lastSent)) {
+        const nextSend = lastSent + EMAIL_OTP_RESEND_INTERVAL_MS;
+        if (nextSend > Date.now()) {
+          const waitSeconds = Math.ceil((nextSend - Date.now()) / 1000);
+          setFlash(req, 'error', `コードの再送は${waitSeconds}秒後に可能です。`);
+          return res.redirect('/account');
+        }
+      }
     }
+    try {
+      await issueEmailOtpChallenge({
+        userId: user.id,
+        tenantId: user.tenant_id || null,
+        purpose: 'profile_mfa',
+        targetEmail: emailMethod.config?.targetEmail || user.email,
+      });
+      setFlash(req, 'success', 'メールコードを送信しました。メールボックスを確認してください。');
+    } catch (error) {
+      if (error && error.code === 'EMAIL_OTP_RATE_LIMITED') {
+        setFlash(req, 'error', formatEmailOtpRateLimitMessage(error.retryAt));
+      } else {
+        setFlash(req, 'error', 'メールコードの送信に失敗しました。時間を置いて再実行してください。');
+      }
+    }
+    return res.redirect('/account');
+  }
+);
 
-    const hashed = await hashPassword(newPassword);
-    await updateUserPassword(user.id, hashed, false);
-    await setMustChangePassword(user.id, false);
+app.post(
+  '/account/profile',
+  requireRole(ROLES.PLATFORM, ROLES.TENANT, ROLES.EMPLOYEE),
+  async (req, res) => {
+    const user = await getUserById(req.session.user.id);
+    if (!user) {
+      delete req.session.user;
+      setFlash(req, 'error', 'ユーザー情報を確認できませんでした。再度ログインしてください。');
+      return res.redirect('/login');
+    }
+    const firstNameResult = validateNameField('名', req.body.firstName);
+    if (!firstNameResult.valid) {
+      setFlash(req, 'error', firstNameResult.message);
+      return res.redirect('/account');
+    }
+    const lastNameResult = validateNameField('姓', req.body.lastName);
+    if (!lastNameResult.valid) {
+      setFlash(req, 'error', lastNameResult.message);
+      return res.redirect('/account');
+    }
+    if (
+      user.first_name === firstNameResult.value &&
+      user.last_name === lastNameResult.value
+    ) {
+      setFlash(req, 'info', '変更がありません。');
+      return res.redirect('/account');
+    }
+    await updateUserProfile(user.id, {
+      firstName: firstNameResult.value,
+      lastName: lastNameResult.value,
+    });
     if (req.session.user) {
-      delete req.session.user.mustChangePassword;
+      req.session.user.name = `${lastNameResult.value}${firstNameResult.value}`;
     }
-    setFlash(req, 'success', 'パスワードを変更しました。');
-    return res.redirect('/');
+    setFlash(req, 'success', '氏名を更新しました。');
+    return res.redirect('/account');
+  }
+);
+
+app.post(
+  '/account/email/start',
+  requireRole(ROLES.PLATFORM, ROLES.TENANT, ROLES.EMPLOYEE),
+  async (req, res) => {
+    const user = await getUserById(req.session.user.id);
+    if (!user) {
+      delete req.session.user;
+      setFlash(req, 'error', 'ユーザー情報を再取得できませんでした。再度ログインしてください。');
+      return res.redirect('/login');
+    }
+    const newEmail = normalizeEmail(req.body.newEmail);
+    if (!newEmail) {
+      setFlash(req, 'error', '新しいメールアドレスを入力してください。');
+      return res.redirect('/account#email-change');
+    }
+    if (newEmail === user.email) {
+      setFlash(req, 'error', '現在と同じメールアドレスは指定できません。');
+      return res.redirect('/account#email-change');
+    }
+    const existing = await getUserByEmail(newEmail);
+    if (existing) {
+      setFlash(req, 'error', 'このメールアドレスは既に使用されています。');
+      return res.redirect('/account#email-change');
+    }
+    const requiresAdditionalMfa = Boolean(await getVerifiedMfaMethod(user.id, MFA_TYPES.TOTP));
+    const emailMfaAvailable = Boolean(await getVerifiedMfaMethod(user.id, MFA_TYPES.EMAIL_OTP));
+    if (requiresAdditionalMfa || emailMfaAvailable) {
+      const method = req.body.mfaMethod;
+      const token = req.body.mfaToken;
+      if (!method || !token) {
+        setFlash(req, 'error', '登録済み 2FA の認証コードを入力してください。');
+        return res.redirect('/account#email-change');
+      }
+      const result = await verifyProfileMfa(user, method, token);
+      if (!result.ok) {
+        setFlash(req, 'error', result.message);
+        return res.redirect('/account#email-change');
+      }
+    }
+    try {
+      await issueEmailOtpChallenge({
+        userId: user.id,
+        tenantId: user.tenant_id || null,
+        purpose: 'email_change',
+        targetEmail: newEmail,
+        metadata: { previousEmail: user.email },
+      });
+      setFlash(req, 'success', '確認コードを送信しました。新しいメールの受信箱を確認してください。');
+    } catch (error) {
+      if (error && error.code === 'EMAIL_OTP_RATE_LIMITED') {
+        setFlash(req, 'error', formatEmailOtpRateLimitMessage(error.retryAt));
+      } else {
+        setFlash(req, 'error', '確認コードの送信に失敗しました。時間を置いて再実行してください。');
+      }
+    }
+    return res.redirect('/account#email-change');
+  }
+);
+
+app.post(
+  '/account/email/cancel',
+  requireRole(ROLES.PLATFORM, ROLES.TENANT, ROLES.EMPLOYEE),
+  async (req, res) => {
+    await deleteEmailOtpChallenges({ userId: req.session.user.id, purpose: 'email_change' });
+    setFlash(req, 'info', 'メールアドレス変更の手続きを取り消しました。');
+    return res.redirect('/account#email-change');
+  }
+);
+
+app.post(
+  '/account/email/verify',
+  requireRole(ROLES.PLATFORM, ROLES.TENANT, ROLES.EMPLOYEE),
+  async (req, res) => {
+    const user = await getUserById(req.session.user.id);
+    if (!user) {
+      delete req.session.user;
+      setFlash(req, 'error', 'ユーザー情報を再取得できませんでした。再度ログインしてください。');
+      return res.redirect('/login');
+    }
+    const token = normalizeOtpToken(req.body.token);
+    if (!token) {
+      setFlash(req, 'error', '確認コードを入力してください。');
+      return res.redirect('/account#email-change');
+    }
+    const challenge = await getActiveEmailOtpChallenge({
+      userId: user.id,
+      purpose: 'email_change',
+    });
+    if (!challenge) {
+      setFlash(req, 'error', '有効な手続きが見つかりません。最初からやり直してください。');
+      return res.redirect('/account#email-change');
+    }
+    if (isEmailOtpLocked(challenge)) {
+      setFlash(req, 'error', '確認コードはロック中です。10分後に再試行してください。');
+      return res.redirect('/account#email-change');
+    }
+    if (isEmailOtpExpired(challenge)) {
+      setFlash(req, 'error', '確認コードの有効期限が切れました。再度送信してください。');
+      return res.redirect('/account#email-change');
+    }
+    const hashed = hashOtpCode(token);
+    if (hashed !== challenge.code_hash) {
+      const updated = await recordEmailOtpFailure(challenge);
+      const locked = updated && isEmailOtpLocked(updated);
+      setFlash(
+        req,
+        'error',
+        locked ? '失敗が続いたためロックされました。10分後に再度お試しください。' : '確認コードが正しくありません。'
+      );
+      return res.redirect('/account#email-change');
+    }
+    await completeEmailOtpChallenge(challenge);
+    await updateUserEmail(user.id, challenge.target_email);
+    await deleteEmailOtpChallenges({ userId: user.id, purpose: 'email_change' });
+    await new Promise((resolve, reject) => {
+      req.session.regenerate((err) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+        req.session.flash = {
+          type: 'success',
+          message: 'メールアドレスを更新しました。新しいメールアドレスでログインしてください。',
+        };
+        resolve();
+      });
+    });
+    return res.redirect('/login');
   }
 );
 
@@ -1912,6 +3078,155 @@ app.post(
     clearPendingMfa(req);
     clearTrustedDeviceCookie(req, res);
     setFlash(req, 'success', '認証アプリによる多要素認証を無効化しました。');
+    return res.redirect(MFA_SETTINGS_PATH);
+  }
+);
+
+app.post(
+  '/settings/mfa/email/start',
+  requireRole(ROLES.PLATFORM, ROLES.TENANT, ROLES.EMPLOYEE),
+  async (req, res) => {
+    const user = await getUserById(req.session.user.id);
+    if (!user) {
+      delete req.session.user;
+      setFlash(req, 'error', 'ユーザー情報を再取得できませんでした。再度ログインしてください。');
+      return res.redirect('/login');
+    }
+    try {
+      await issueEmailOtpChallenge({
+        userId: user.id,
+        tenantId: user.tenant_id || null,
+        purpose: 'mfa_email_setup',
+        targetEmail: user.email,
+      });
+      setFlash(req, 'success', `${user.email} に確認コードを送信しました。`);
+    } catch (error) {
+      if (error && error.code === 'EMAIL_OTP_RATE_LIMITED') {
+        setFlash(req, 'error', formatEmailOtpRateLimitMessage(error.retryAt));
+      } else {
+        setFlash(
+          req,
+          'error',
+          '確認コードの送信に失敗しました。時間を置いて再実行してください。'
+        );
+      }
+    }
+    return res.redirect(MFA_SETTINGS_PATH);
+  }
+);
+
+app.post(
+  '/settings/mfa/email/resend',
+  requireRole(ROLES.PLATFORM, ROLES.TENANT, ROLES.EMPLOYEE),
+  async (req, res) => {
+    const user = await getUserById(req.session.user.id);
+    if (!user) {
+      delete req.session.user;
+      setFlash(req, 'error', 'ユーザー情報を再取得できませんでした。再度ログインしてください。');
+      return res.redirect('/login');
+    }
+    const existing = await getActiveEmailOtpChallenge({
+      userId: user.id,
+      purpose: 'mfa_email_setup',
+    });
+    if (!existing) {
+      setFlash(req, 'error', '再送できるメールコードがありません。最初からやり直してください。');
+      return res.redirect(MFA_SETTINGS_PATH);
+    }
+    if (isEmailOtpLocked(existing)) {
+      setFlash(req, 'error', 'メールコードはロック中です。10分後に再試行してください。');
+      return res.redirect(MFA_SETTINGS_PATH);
+    }
+    const lastSent = Date.parse(existing.last_sent_at);
+    if (Number.isFinite(lastSent)) {
+      const nextSend = lastSent + EMAIL_OTP_RESEND_INTERVAL_MS;
+      if (nextSend > Date.now()) {
+        const waitSeconds = Math.ceil((nextSend - Date.now()) / 1000);
+        setFlash(req, 'error', `コードの再送は${waitSeconds}秒後に実行できます。`);
+        return res.redirect(MFA_SETTINGS_PATH);
+      }
+    }
+    try {
+      await refreshEmailOtpChallenge(existing);
+      setFlash(req, 'success', `${existing.target_email} に確認コードを再送しました。`);
+    } catch (error) {
+      if (error && error.code === 'EMAIL_OTP_RATE_LIMITED') {
+        setFlash(req, 'error', formatEmailOtpRateLimitMessage(error.retryAt));
+      } else {
+        setFlash(
+          req,
+          'error',
+          '確認コードの再送に失敗しました。時間を置いて再実行してください。'
+        );
+      }
+    }
+    return res.redirect(MFA_SETTINGS_PATH);
+  }
+);
+
+app.post(
+  '/settings/mfa/email/verify',
+  requireRole(ROLES.PLATFORM, ROLES.TENANT, ROLES.EMPLOYEE),
+  async (req, res) => {
+    const user = await getUserById(req.session.user.id);
+    if (!user) {
+      delete req.session.user;
+      setFlash(req, 'error', 'ユーザー情報を再取得できませんでした。再度ログインしてください。');
+      return res.redirect('/login');
+    }
+    const token = normalizeOtpToken(req.body.token);
+    if (!token) {
+      setFlash(req, 'error', '確認コードを入力してください。');
+      return res.redirect(MFA_SETTINGS_PATH);
+    }
+    const challenge = await getActiveEmailOtpChallenge({
+      userId: user.id,
+      purpose: 'mfa_email_setup',
+    });
+    if (!challenge) {
+      setFlash(req, 'error', '有効な確認コードがありません。最初からやり直してください。');
+      return res.redirect(MFA_SETTINGS_PATH);
+    }
+    if (isEmailOtpLocked(challenge)) {
+      setFlash(req, 'error', 'メールコードはロック中です。10分後に再試行してください。');
+      return res.redirect(MFA_SETTINGS_PATH);
+    }
+    const hashed = hashOtpCode(token);
+    if (hashed !== challenge.code_hash) {
+      await recordEmailOtpFailure(challenge);
+      setFlash(req, 'error', '確認コードが正しくありません。');
+      return res.redirect(MFA_SETTINGS_PATH);
+    }
+    await completeEmailOtpChallenge(challenge);
+    await deleteEmailOtpChallenges({ userId: user.id, purpose: 'mfa_email_setup' });
+    const existingMethod = await getMfaMethodByUserAndType(user.id, MFA_TYPES.EMAIL_OTP);
+    if (existingMethod) {
+      await updateMfaMethod(existingMethod.id, {
+        config: { targetEmail: challenge.target_email },
+        isVerified: true,
+      });
+    } else {
+      await createMfaMethod({
+        userId: user.id,
+        type: MFA_TYPES.EMAIL_OTP,
+        secret: null,
+        config: { targetEmail: challenge.target_email },
+        isVerified: true,
+      });
+    }
+    setFlash(req, 'success', 'メールワンタイムコードを有効化しました。');
+    return res.redirect(MFA_SETTINGS_PATH);
+  }
+);
+
+app.post(
+  '/settings/mfa/email/disable',
+  requireRole(ROLES.PLATFORM, ROLES.TENANT, ROLES.EMPLOYEE),
+  async (req, res) => {
+    await deleteMfaMethodsByUserAndType(req.session.user.id, MFA_TYPES.EMAIL_OTP);
+    await deleteEmailOtpChallenges({ userId: req.session.user.id, purpose: 'mfa_email_setup' });
+    await deleteEmailOtpChallenges({ userId: req.session.user.id, purpose: 'profile_mfa' });
+    setFlash(req, 'success', 'メールワンタイムコードを無効化しました。');
     return res.redirect(MFA_SETTINGS_PATH);
   }
 );
@@ -2090,6 +3405,7 @@ app.get(
       ...employee,
       deactivatedAtDisplay: employee.deactivated_at ? formatDateTime(employee.deactivated_at) : '',
     }));
+    const tenant = await getTenantById(tenantId);
     res.render('admin_dashboard', {
       monthlySummary,
       targetYear,
@@ -2099,6 +3415,9 @@ app.get(
       employeesInactive: employeesInactiveDisplay,
       retentionYears: DATA_RETENTION_YEARS,
       queryString: buildSessionQuery(effectiveQuery),
+      tenantSettings: {
+        requireEmailVerification: Boolean(tenant?.require_employee_email_verification),
+      },
     });
   }
 );
@@ -2131,6 +3450,25 @@ app.post(
       setFlash(req, 'error', '不明な操作です。');
     }
     res.redirect('/admin');
+  }
+);
+
+app.post(
+  '/admin/settings/email-verification',
+  requireRole(ROLES.TENANT),
+  ensureTenantContext,
+  async (req, res) => {
+    const tenantId = req.session.user.tenantId;
+    const nextValue = req.body.requireEmployeeEmailVerification === 'on';
+    await updateTenantRegistrationSettings(tenantId, {
+      requireEmailVerification: nextValue,
+    });
+    setFlash(
+      req,
+      'success',
+      nextValue ? '従業員登録時のメール確認を有効化しました。' : '従業員登録時のメール確認を無効化しました。'
+    );
+    return res.redirect('/admin');
   }
 );
 
@@ -2415,6 +3753,7 @@ app.get(
       codes,
       tenantId,
       generated,
+      roleCodeMaxUsesLimit: ROLE_CODE_MAX_USES_LIMIT,
     });
   }
 );
@@ -2438,7 +3777,15 @@ app.post(
     if (maxUsesInput) {
       const parsed = Number.parseInt(maxUsesInput, 10);
       if (Number.isNaN(parsed) || parsed <= 0) {
-        setFlash(req, 'error', '使用回数上限は1以上の整数で指定してください。');
+        setFlash(req, 'error', '利用回数上限は1以上の整数で指定してください。');
+        return res.redirect('/admin/role-codes');
+      }
+      if (parsed > ROLE_CODE_MAX_USES_LIMIT) {
+        setFlash(
+          req,
+          'error',
+          `利用回数上限は最大 ${ROLE_CODE_MAX_USES_LIMIT} までです。上限値を下げてください。`
+        );
         return res.redirect('/admin/role-codes');
       }
       maxUses = parsed;

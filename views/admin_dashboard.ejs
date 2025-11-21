@@ -3,14 +3,14 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>管理者ダッシュボード | 勤怠管理システム</title>
+  <title>管理者ダッシュボード | Attendly</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
   <header class="app-header">
     <div class="app-header__brand">
       <h1 class="app-header__title">
-        <a href="/admin" class="app-header__home-link">勤怠管理システム</a>
+        <a href="/admin" class="app-header__home-link">Attendly</a>
       </h1>
       <span class="app-header__role">テナント管理者</span>
     </div>
@@ -35,6 +35,8 @@
       <div class="flash <%= flash.type %>"><%= flash.message %></div>
     <% } %>
 
+    <% const safeTenantSettings = tenantSettings || {}; %>
+    <% const safeQueryString = typeof queryString === 'string' ? encodeURI(queryString) : ''; %>
     <section class="card">
       <header class="section-header">
         <h2>月次サマリー</h2>
@@ -80,7 +82,7 @@
                   <td>
                     <a
                       class="btn secondary"
-                      href="/admin/employees/<%= row.user.id %>/sessions<%= queryString %>"
+                      href="/admin/employees/<%= row.user.id %>/sessions<%= safeQueryString %>"
                     >
                       勤務記録訂正
                     </a>
@@ -199,6 +201,21 @@
           </tbody>
         </table>
       </div>
+    </section>
+
+    <section class="card" id="tenant-settings">
+      <h2>テナント設定</h2>
+      <form method="post" action="/admin/settings/email-verification" class="form-inline">
+        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+        <label class="form-checkbox">
+          <input type="checkbox" name="requireEmployeeEmailVerification" value="on" <%= safeTenantSettings.requireEmailVerification ? 'checked' : '' %>>
+          <span>従業員登録時にメールアドレスの確認コードを必須にする</span>
+        </label>
+        <p class="form-note">
+          有効化すると従業員自身が登録を完了する前に、6 桁の確認コードでメールアドレスを検証します。ロールコードの利用回数は確認完了後にのみ消費されます。
+        </p>
+        <button type="submit" class="btn secondary">設定を保存</button>
+      </form>
     </section>
   </main>
   <script src="/header.js" defer></script>

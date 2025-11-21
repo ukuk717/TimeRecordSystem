@@ -3,33 +3,42 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>多要素認証 | 勤怠管理システム</title>
+  <title>多要素認証 | <%= brandName %></title>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
   <header class="app-header">
     <div class="app-header__brand">
       <h1 class="app-header__title">
-        <a href="/" class="app-header__home-link">勤怠管理システム</a>
+        <a href="/" class="app-header__home-link"><%= brandName %></a>
       </h1>
     </div>
   </header>
   <main class="container auth-container">
     <% if (flash) { %>
-      <div class="flash <%= flash.type %>"><%= flash.message %></div>
+      <div id="flashMessage" class="flash <%= flash.type %>" role="alert"><%= flash.message %></div>
     <% } %>
     <section class="card">
       <h2>多要素認証</h2>
-      <p>
-        <strong><%= factorLabel %></strong> のコードを入力してください。
-        <% if (email) { %>
-          対象アカウント: <code><%= email %></code>
-        <% } %>
+      <p class="form-note">
+        対象アカウント: <code><%= email %></code>
       </p>
 
-      <div class="mfa-login-forms">
+      <%
+        const totpMethod = (methods || []).find((method) => method.type === 'totp');
+        const emailMethod = (methods || []).find((method) => method.type === 'email_otp');
+        const flashId = flash ? 'flashMessage' : null;
+      %>
+
+      <% if (totpMethod) { %>
         <div class="mfa-login-panel">
-          <h3>認証アプリのコード</h3>
+          <h3>二要素アプリのコード</h3>
+          <% const totpDescribedBy = []; %>
+          <% if (flashId) { totpDescribedBy.push(flashId); } %>
+          <% if (totpMethod.isLocked) { %>
+            <% totpDescribedBy.push('totpLockNotice'); %>
+            <p class="form-note error" id="totpLockNotice">二要素アプリはロック中です。10分後に再試行してください。</p>
+          <% } %>
           <form method="post" action="/login/mfa" class="form">
             <input type="hidden" name="_csrf" value="<%= csrfToken %>">
             <input type="hidden" name="authMode" value="totp">
@@ -40,51 +49,154 @@
                 name="token"
                 inputmode="numeric"
                 pattern="[0-9]*"
-                maxlength="8"
-                required
+                maxlength="<%= otpLength || 6 %>"
                 autocomplete="one-time-code"
+                aria-describedby="<%= totpDescribedBy.join(' ') %>"
+                <% if (!totpMethod.isLocked) { %>required<% } else { %>disabled<% } %>
               >
             </label>
             <label class="form-checkbox">
-              <input type="checkbox" name="rememberDevice" value="on">
-              <span>このデバイスを<%= trustDurationDays || 30 %>日間記憶する（共有端末では選択しないでください）</span>
+              <input type="checkbox" name="rememberDevice" value="on" aria-describedby="<%= totpDescribedBy.join(' ') %>" <% if (totpMethod.isLocked) { %>disabled<% } %>>
+              <span>このデバイスを<%= trustDurationDays || 30 %>日間信頼する(共有端末では選択しないでください)</span>
             </label>
-            <button type="submit" class="btn primary">認証する</button>
+            <button type="submit" class="btn primary" aria-describedby="<%= totpDescribedBy.join(' ') %>" <% if (totpMethod.isLocked) { %>disabled<% } %>>認証する</button>
           </form>
         </div>
+      <% } %>
 
+      <% if (emailMethod) { %>
         <div class="mfa-login-panel">
-          <h3>バックアップコードを使用</h3>
-          <form method="post" action="/login/mfa" class="form">
+          <h3>メールワンタイムコード</h3>
+          <p class="form-note">送信先: <code><%= emailMethod.targetEmail %></code></p>
+          <form method="post" action="/login/mfa/email/send" class="form form-inline">
             <input type="hidden" name="_csrf" value="<%= csrfToken %>">
-            <input type="hidden" name="authMode" value="backup">
-            <label class="form-field">
-              <span>バックアップコード（1回限り）</span>
-              <input
-                type="text"
-                name="backupCode"
-                inputmode="text"
-                maxlength="16"
-                required
-                autocomplete="one-time-code"
-                placeholder="例: ABCDE-FGHIJ"
-              >
-            </label>
-            <p class="form-note">
-              認証アプリを利用できない場合にのみ使用してください。コードは使用後に失効します。
-            </p>
-            <button type="submit" class="btn secondary">バックアップコードで認証</button>
+            <button type="submit" class="btn secondary">コードを送信</button>
           </form>
+          <% if (emailState && emailState.hasChallenge) { %>
+            <% const emailLockId = emailState.isLocked ? 'emailLockNotice' : null; %>
+            <% const emailCountdownId = emailState.resendWaitSeconds > 0 ? 'emailResendCountdown' : null; %>
+            <% const emailDescribedBy = [flashId, emailLockId, emailCountdownId].filter(Boolean); %>
+            <p class="form-note">
+              有効期限: <%= emailState.expiresAtDisplay || '5分程度' %>
+            </p>
+            <% if (emailState.isLocked) { %>
+              <p class="form-note error" id="emailLockNotice">メールコードはロックされています。10分後に再試行してください。</p>
+            <% } %>
+            <form method="post" action="/login/mfa/email/send" class="form form-inline">
+              <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+              <button
+                type="submit"
+                class="btn"
+                data-resend-button
+                data-locked="<%= emailState.isLocked ? 'true' : 'false' %>"
+                data-countdown-seconds="<%= emailState.resendWaitSeconds || 0 %>"
+                aria-describedby="<%= [flashId, emailCountdownId, emailLockId].filter(Boolean).join(' ') %>"
+                <% if (emailState.resendWaitSeconds > 0 || emailState.isLocked) { %>disabled<% } %>
+              >
+                コードを再送
+                <span
+                  class="muted"
+                  id="emailResendCountdown"
+                  data-countdown-seconds="<%= emailState.resendWaitSeconds || 0 %>"
+                  aria-live="polite"
+                >
+                  <% if (emailState.resendWaitSeconds > 0) { %>
+                    (<%= emailState.resendWaitSeconds %>秒後)
+                  <% } %>
+                </span>
+              </button>
+            </form>
+            <form method="post" action="/login/mfa" class="form">
+              <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+              <input type="hidden" name="authMode" value="email">
+              <label class="form-field">
+                <span>メールコード</span>
+                <input
+                  type="text"
+                  name="token"
+                  inputmode="numeric"
+                  pattern="[0-9]*"
+                  maxlength="<%= otpLength || 6 %>"
+                  autocomplete="one-time-code"
+                  aria-describedby="<%= emailDescribedBy.join(' ') %>"
+                  <% if (emailState.isLocked) { %>disabled<% } else { %>required<% } %>
+                >
+              </label>
+              <button
+                type="submit"
+                class="btn primary"
+                aria-describedby="<%= emailDescribedBy.join(' ') %>"
+                <% if (emailState.isLocked) { %>disabled<% } %>
+              >
+                メールコードで認証
+              </button>
+            </form>
+          <% } else { %>
+            <p class="form-note">「コードを送信」を押してメールを確認してください。</p>
+          <% } %>
         </div>
+      <% } %>
+
+      <div class="mfa-login-panel">
+        <h3>バックアップコードを使用</h3>
+        <form method="post" action="/login/mfa" class="form">
+          <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+          <input type="hidden" name="authMode" value="backup">
+          <label class="form-field">
+            <span>バックアップコード（1回限り）</span>
+            <input
+              type="text"
+              name="backupCode"
+              inputmode="text"
+              maxlength="16"
+              autocomplete="one-time-code"
+              placeholder="例: ABCDE-FGHIJ"
+              required
+            >
+          </label>
+          <p class="form-note">
+            認証アプリやメールを利用できない場合のみ使用してください。コードは使用後に失効します。
+          </p>
+          <button type="submit" class="btn secondary">バックアップコードで認証</button>
+        </form>
       </div>
 
       <p class="form-note">
-        バックアップコードがすべて無効になった場合は、テナント管理者に連絡し、従業員一覧の「2FAリセット」を実行してもらってから再設定してください。
+        バックアップコードをすべて使い切った場合は、テナント管理者に連絡し、従業員一覧の「2FAリセット」を実行してもらってから再設定してください。
       </p>
       <div class="form-links">
         <a class="link" href="/login/mfa/cancel">ログイン画面へ戻る</a>
       </div>
     </section>
   </main>
+  <script>
+    (function () {
+      const resendButton = document.querySelector('[data-resend-button]');
+      const countdownEl = document.getElementById('emailResendCountdown');
+      if (!resendButton || !countdownEl) {
+        return;
+      }
+      let remaining = Number.parseInt(countdownEl.getAttribute('data-countdown-seconds'), 10);
+      const isLocked = resendButton.getAttribute('data-locked') === 'true';
+      if (!Number.isFinite(remaining) || remaining <= 0) {
+        return;
+      }
+      const updateCountdown = () => {
+        if (remaining <= 0) {
+          countdownEl.textContent = '';
+          if (!isLocked) {
+            resendButton.disabled = false;
+          }
+          clearInterval(timerId);
+          return;
+        }
+        countdownEl.textContent = `(${remaining}秒後)`;
+        remaining -= 1;
+      };
+      resendButton.disabled = true;
+      updateCountdown();
+      const timerId = setInterval(updateCountdown, 1000);
+    })();
+  </script>
 </body>
 </html>

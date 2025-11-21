@@ -1,8 +1,8 @@
-Subject: 【TimeRecordSystem】テナント管理者2FAリセット完了のお知らせ
+Subject: 【Attendly】テナント管理者2FAリセット完了のお知らせ
 
 <%= tenantAdminName %> 様
 
-TimeRecordSystem サポートの <%= operatorName %> です。
+Attendly サポートの <%= operatorName %> です。
 ご依頼に基づき、テナント「<%= tenantName %>」（UID: <%= tenantUid %>）の管理者アカウントに設定されていた多要素認証を <%= resetExecutedAt %> にリセットしました。
 
 【これからの手順】
@@ -21,6 +21,6 @@ TimeRecordSystem サポートの <%= operatorName %> です。
 その他ご不明点がございましたら、お気軽にお問い合わせください。
 
 --
-TimeRecordSystem サポート
+Attendly サポート
 <%= operatorName %>
 <%= operatorEmail %>

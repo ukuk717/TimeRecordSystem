@@ -3,14 +3,14 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>新規アカウント登録 | 勤怠管理システム</title>
+  <title>新規アカウント登録 | Attendly</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
   <header class="app-header">
     <div class="app-header__brand">
       <h1 class="app-header__title">
-        <a href="/" class="app-header__home-link">勤怠管理システム</a>
+        <a href="/" class="app-header__home-link">Attendly</a>
       </h1>
     </div>
   </header>
@@ -22,6 +22,9 @@
       <h2>従業員アカウント登録</h2>
       <p class="form-note">
         事前にテナント管理者から発行されたロールコードが必要です。ロールコードは半角英数字（A-Z, 0-9）のみ入力可能です。
+      </p>
+      <p class="form-note">
+        テナントによっては、登録前にメールアドレスへ送信される 6 桁の確認コードを入力する必要があります。
       </p>
       <% if (roleCodeValue) { %>
         <p class="form-note">共有リンクからアクセスしたため、ロールコードが自動入力されています。</p>
@@ -45,6 +48,10 @@
         <label class="form-field">
           <span>メールアドレス</span>
           <input type="email" name="email" required autocomplete="email">
+        </label>
+        <label class="form-field">
+          <span>確認コード（6桁・必要な場合のみ）</span>
+          <input type="text" name="verificationCode" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code">
         </label>
         <label class="form-field">
           <span>パスワード</span>

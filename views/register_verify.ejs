@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>メール認証 | <%= brandName %></title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <div class="app-header__brand">
+      <h1 class="app-header__title">
+        <a href="/" class="app-header__home-link"><%= brandName %></a>
+      </h1>
+    </div>
+  </header>
+  <main class="container auth-container">
+    <% if (flash) { %>
+      <div class="flash <%= flash.type %>"><%= flash.message %></div>
+    <% } %>
+    <section class="card">
+      <h2>メールアドレスの確認</h2>
+      <p class="form-note">
+        <code><%= email %></code> に 6 桁の確認コードを送信しました。10 分以内に入力して登録を完了してください。
+      </p>
+      <form method="post" action="/register/verify" class="form">
+        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+        <label class="form-field">
+          <span>確認コード</span>
+          <input type="text" name="token" inputmode="numeric" pattern="[0-9]*" maxlength="6" required autocomplete="one-time-code">
+        </label>
+        <button type="submit" class="btn primary">登録を完了する</button>
+      </form>
+      <div class="form-links">
+        <form method="post" action="/register/verify/resend" class="form-inline">
+          <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+          <button type="submit" class="btn secondary">コードを再送</button>
+        </form>
+        <form method="post" action="/register/verify/cancel" class="form-inline">
+          <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+          <button type="submit" class="btn link">登録をやり直す</button>
+        </form>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

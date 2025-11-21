@@ -1,8 +1,8 @@
-Subject: 【TimeRecordSystem】テナント管理者アカウント発行のお知らせ
+Subject: 【Attendly】テナント管理者アカウント発行のお知らせ
 
 <%= tenantAdminName %> 様
 
-このたびは TimeRecordSystem にテナントを登録いただきありがとうございます。
+このたびは Attendly にテナントを登録いただきありがとうございます。
 以下の初期情報で管理者アカウントを発行しましたので、必ず安全な方法で保管し、初回ログイン後すぐにパスワードと2FAを設定してください。
 
 テナント名: <%= tenantName %>
@@ -21,6 +21,6 @@ Subject: 【TimeRecordSystem】テナント管理者アカウント発行のお�
 ご不明点がございましたら、登録時に確認した契約開始情報・電話番号をご準備のうえ、サポートまでご連絡ください。
 
 --
-TimeRecordSystem サポート
+Attendly サポート
 <%= operatorName %>
 <%= operatorEmail %>
